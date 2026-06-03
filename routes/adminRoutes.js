@@ -6,8 +6,8 @@ const { protect, authorize } = require("../middleware/authMiddleware");
 
 // 2. Controllers
 const adminController = require("../controllers/adminController");
-// const dataPlanController = require("../controllers/dataPlanController");
-// const notificationController = require("../controllers/notificationController");
+const dataPlanController = require("../controllers/dataPlanController");
+const notificationController = require("../controllers/notificationController");
 
 // --- ADMIN PROTECTION ---
 // Duk wani route da yake kasa da wannan layin, dole sai admin ko superadmin ya shiga
@@ -58,6 +58,8 @@ router.get("/bvn-requests", adminController.getAllBVNRequests);
 router.patch("/bvn-processing/:id", adminController.updateBVNStatus);
 router.patch("/approve-bvn/:id", adminController.approveBVNRequest);
 
+router.get("/data-plans", dataPlanController.getPlans);
+router.post("/set-plan", dataPlanController.setPlanPrice);
 // --- 8. DATA PLANS & NOTIFICATIONS (Optional/Disabled) ---
 router.get("/data-plans", dataPlanController.getAllPlans);
 
