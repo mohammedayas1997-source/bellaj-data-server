@@ -1,27 +1,44 @@
 const express = require("express");
 const router = express.Router();
-const {
-  getMyAgents,
-  getAgentSalesSummary,
-  assignTargetToAgent,
-} = require("../controllers/supervisorController");
 
-// Mun yi amfani da daidaitaccen middleware dinmu
+const supervisorController = require("../controllers/supervisorController");
+
 const { protect, authorize } = require("../middleware/authMiddleware");
 
-// --- SUPERVISOR ROUTES ---
+const safeHandler = (handler, name) => {
+  if (typeof handler === "function") return handler;
 
-// Duk wani route a nan, sai Supervisor ko Admin kawai
+  return (req, res) => {
+    return res.status(501).json({
+      success: false,
+      message: `${name} is not implemented in supervisorController`,
+    });
+  };
+};
+
+// SUPERVISOR ROUTES
 router.use(protect);
 router.use(authorize("supervisor", "admin"));
 
-// 1. Ganin jerin dukkan Agents da ke karkashinsa
-router.get("/my-agents", getMyAgents);
+// Get all agents under supervisor
+router.get(
+  "/my-agents",
+  safeHandler(supervisorController.getMyAgents, "getMyAgents"),
+);
 
-// 2. Ganin yadda kowane Agent yake kokari (Sales summary)
-router.get("/agent-performance/:agentId", getAgentSalesSummary);
+// Agent performance
+router.get(
+  "/agent-performance/:agentId",
+  safeHandler(
+    supervisorController.getAgentSalesSummary,
+    "getAgentSalesSummary",
+  ),
+);
 
-// 3. Ba Agent takamaiman buri (Target) na wata
-router.put("/assign-target/:agentId", assignTargetToAgent);
+// Assign monthly target
+router.put(
+  "/assign-target/:agentId",
+  safeHandler(supervisorController.assignTargetToAgent, "assignTargetToAgent"),
+);
 
 module.exports = router;

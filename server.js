@@ -27,7 +27,7 @@ startDB();
 /* CORS CONFIGURATION */
 const allowedOrigins = [
   "https://bellaj-data-hub.vercel.app",
-  "https://www.bellajdatahub.com",
+  "https://www.bellajdatahub.online",
   "https://bellajdatahub.com",
   "https://bellaj-data-server1-r08bnzaww-abdulrahman-mohammeds-projects.vercel.app",
   "http://localhost:19006",
@@ -219,10 +219,8 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 10000;
 
-if (process.env.NODE_ENV !== "production") {
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Bellaj Data Hub API running on port ${PORT}`);
-  });
-}
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Bellaj Data Hub API running on port ${PORT}`);
+});
 
 module.exports = app;
