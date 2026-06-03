@@ -1,66 +1,122 @@
 const express = require("express");
 const router = express.Router();
 
-// 1. Middlewares
 const { protect, authorize } = require("../middleware/authMiddleware");
 
-// 2. Controllers
 const adminController = require("../controllers/adminController");
 const dataPlanController = require("../controllers/dataPlanController");
-const notificationController = require("../controllers/notificationController");
 
-// --- ADMIN PROTECTION ---
-// Duk wani route da yake kasa da wannan layin, dole sai admin ko superadmin ya shiga
+const safeHandler = (handler, name) => {
+  if (typeof handler === "function") return handler;
+
+  return (req, res) => {
+    return res.status(501).json({
+      success: false,
+      message: `${name} is not implemented`,
+    });
+  };
+};
+
 router.use(protect);
 router.use(authorize("admin", "superadmin"));
 
-// --- 3. USER MANAGEMENT ---
-router.get("/users", adminController.getAllUsers);
-router.get("/supervisors", adminController.getSupervisors);
-router.get("/agents", adminController.getAgents);
-router.put("/assign-target", adminController.assignTarget);
-router.patch("/suspend-user/:id", adminController.suspendUser);
-router.patch("/update-role", adminController.updateUserRole);
-
-// --- NEW ADMIN POWERS ---
-router.patch("/toggle-wallet-status", adminController.toggleWalletStatus);
-router.post("/debit-user", adminController.debitUser);
-
-// --- 4. REFUND MANAGEMENT ---
-router.get("/pending-refunds", adminController.getPendingRefunds);
-router.post("/approve-refund/:id", adminController.approveRefund);
-
-// --- 5. ACTIVITY LOGS & SUPPORT ---
-router.get("/activities", adminController.getSupportActivities);
-
-// Binciken kudi (Track Transaction)
+// USER MANAGEMENT
+router.get("/users", safeHandler(adminController.getAllUsers, "getAllUsers"));
 router.get(
-  "/track-transaction/:transactionId",
-  adminController.trackTransaction,
+  "/supervisors",
+  safeHandler(adminController.getSupervisors, "getSupervisors"),
+);
+router.get("/agents", safeHandler(adminController.getAgents, "getAgents"));
+router.put(
+  "/assign-target",
+  safeHandler(adminController.assignTarget, "assignTarget"),
+);
+router.patch(
+  "/suspend-user/:id",
+  safeHandler(adminController.suspendUser, "suspendUser"),
+);
+router.patch(
+  "/update-role",
+  safeHandler(adminController.updateUserRole, "updateUserRole"),
 );
 
-// Tura wa Admin bukatar gyara (Request Fix)
-router.post("/request-admin-fix", adminController.requestAdminFix);
+// ADMIN POWERS
+router.patch(
+  "/toggle-wallet-status",
+  safeHandler(adminController.toggleWalletStatus, "toggleWalletStatus"),
+);
+router.post("/debit-user", safeHandler(adminController.debitUser, "debitUser"));
 
-// Ganin dukkan rahotanni (Support Reports)
-router.get("/all-reports", adminController.getSupportRequests);
+// REFUND MANAGEMENT
+router.get(
+  "/pending-refunds",
+  safeHandler(adminController.getPendingRefunds, "getPendingRefunds"),
+);
+router.post(
+  "/approve-refund/:id",
+  safeHandler(adminController.approveRefund, "approveRefund"),
+);
 
-// Matakin Admin akan rahoton koke (Handle Report)
-router.patch("/handle-report", adminController.handleSupportRequest);
+// ACTIVITY LOGS & SUPPORT
+router.get(
+  "/activities",
+  safeHandler(adminController.getSupportActivities, "getSupportActivities"),
+);
 
-// --- 6. NIMC MANAGEMENT ROUTES ---
-router.get("/nimc-requests", adminController.getAllNIMCRequests);
-router.patch("/nimc-processing/:id", adminController.updateToProcessing);
-router.patch("/approve-nimc/:id", adminController.approveRequest);
+router.get(
+  "/track-transaction/:transactionId",
+  safeHandler(adminController.trackTransaction, "trackTransaction"),
+);
 
-// --- 7. BVN MANAGEMENT ROUTES ---
-router.get("/bvn-requests", adminController.getAllBVNRequests);
-router.patch("/bvn-processing/:id", adminController.updateBVNStatus);
-router.patch("/approve-bvn/:id", adminController.approveBVNRequest);
+router.post(
+  "/request-admin-fix",
+  safeHandler(adminController.requestAdminFix, "requestAdminFix"),
+);
 
-router.get("/data-plans", dataPlanController.getPlans);
-router.post("/set-plan", dataPlanController.setPlanPrice);
-// --- 8. DATA PLANS & NOTIFICATIONS (Optional/Disabled) ---
-router.get("/data-plans", dataPlanController.getAllPlans);
+router.get(
+  "/all-reports",
+  safeHandler(adminController.getSupportRequests, "getSupportRequests"),
+);
+
+router.patch(
+  "/handle-report",
+  safeHandler(adminController.handleSupportRequest, "handleSupportRequest"),
+);
+
+// NIMC MANAGEMENT
+router.get(
+  "/nimc-requests",
+  safeHandler(adminController.getAllNIMCRequests, "getAllNIMCRequests"),
+);
+router.patch(
+  "/nimc-processing/:id",
+  safeHandler(adminController.updateToProcessing, "updateToProcessing"),
+);
+router.patch(
+  "/approve-nimc/:id",
+  safeHandler(adminController.approveRequest, "approveRequest"),
+);
+
+// BVN MANAGEMENT
+router.get(
+  "/bvn-requests",
+  safeHandler(adminController.getAllBVNRequests, "getAllBVNRequests"),
+);
+router.patch(
+  "/bvn-processing/:id",
+  safeHandler(adminController.updateBVNStatus, "updateBVNStatus"),
+);
+router.patch(
+  "/approve-bvn/:id",
+  safeHandler(adminController.approveBVNRequest, "approveBVNRequest"),
+);
+
+// DATA PLANS
+router.get("/data-plans", safeHandler(dataPlanController.getPlans, "getPlans"));
+
+router.post(
+  "/set-plan",
+  safeHandler(dataPlanController.setPlanPrice, "setPlanPrice"),
+);
 
 module.exports = router;
