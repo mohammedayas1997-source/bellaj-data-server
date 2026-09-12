@@ -307,6 +307,143 @@ exports.login = async (req, res) => {
   }
 };
 
+/**
+ * @desc    Tura 6-Digit OTP zuwa Email don Canza Password
+ * @route   POST /api/v1/auth/forgot-password
+ * @access  Public
+ */
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide your registered email address.",
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "No account found with this email address.",
+      });
+    }
+
+    // Ƙirƙirar lambar OTP guda 6
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Adana OTP da lokacin ƙarewarsa (minti 15) a cikin bayanan mai amfani
+    user.resetPasswordOtp = otp;
+    user.resetPasswordExpires = Date.now() + 15 * 60 * 1000; // 15 mins
+    await user.save({ validateBeforeSave: false });
+
+    // Tura Email ta Nodemailer
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      });
+
+      const mailOptions = {
+        from: `"${APP_NAME} Security" <${process.env.EMAIL_USER}>`,
+        to: user.email,
+        subject: `Your Password Reset OTP - ${APP_NAME}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 12px;">
+            <div style="background-color: #0B5E3C; padding: 15px; border-radius: 8px; text-align: center;">
+              <h2 style="color: #ffffff; margin: 0;">${APP_NAME}</h2>
+            </div>
+            <div style="padding: 20px 10px; color: #1e293b;">
+              <p>Hello <strong>${user.firstName || "User"}</strong>,</p>
+              <p>You requested to reset your password. Use the 6-digit OTP code below to verify your request:</p>
+              <div style="background-color: #f1f5f9; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
+                <span style="font-size: 28px; font-weight: 900; letter-spacing: 6px; color: #0B5E3C;">${otp}</span>
+              </div>
+              <p style="font-size: 13px; color: #64748b;">This code will expire in 15 minutes. If you did not request a password reset, please ignore this email.</p>
+            </div>
+          </div>
+        `,
+      };
+
+      await transporter.sendMail(mailOptions);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "A 6-digit password reset OTP has been sent to your email.",
+    });
+  } catch (error) {
+    console.error("Forgot Password Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to process forgot password request.",
+    });
+  }
+};
+
+/**
+ * @desc    Tantance OTP tare da sa Sabon Password
+ * @route   POST /api/v1/auth/reset-password
+ * @access  Public
+ */
+exports.resetPassword = async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Email, OTP code, and new password are required.",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters long.",
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await User.findOne({
+      email: normalizedEmail,
+      resetPasswordOtp: String(otp).trim(),
+      resetPasswordExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired OTP code. Please request a new one.",
+      });
+    }
+
+    // Sa sabon password kuma share tsohon OTP
+    user.password = newPassword;
+    user.resetPasswordOtp = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset successful! You can now log in with your new password.",
+    });
+  } catch (error) {
+    console.error("Reset Password Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to reset password.",
+    });
+  }
+};
+
 // TSARO: Paystack Webhook mai tantancewa (HMAC SHA512)
 exports.paystackWebhook = async (req, res) => {
   try {

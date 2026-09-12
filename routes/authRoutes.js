@@ -50,6 +50,10 @@ router.post("/webhook", safeHandler("paystackWebhook"));
 router.get("/profile", protect, safeHandler("getUserProfile"));
 router.get("/me", protect, safeHandler("getUserProfile"));
 
+// Password Recovery Flow
+router.post("/forgot-password", safeHandler("forgotPassword"));
+router.post("/reset-password", safeHandler("resetPassword"));
+
 // Update Security Credentials
 router.put("/update-password", protect, safeHandler("updatePassword"));
 router.patch("/update-password", protect, safeHandler("updatePassword"));
