@@ -69,6 +69,7 @@ const nimcRoutes = require("./routes/nimcRoutes");
 const bvnRoutes = require("./routes/bvnRoutes");
 const superAdminRoutes = require("./routes/superAdminRoutes");
 const validationRoutes = require("./routes/ninRoutes");
+const vasRoutes = require("./routes/vasRoutes");
 
 /* ROUTES REGISTRATION */
 app.use("/api/v1/auth", authRoutes);
@@ -85,6 +86,7 @@ app.use("/api/v1/nimc", nimcRoutes);
 app.use("/api/v1/bvn", bvnRoutes);
 app.use("/api/v1/superadmin", superAdminRoutes);
 app.use("/api/v1/validation", validationRoutes);
+app.use("/api/v1/services", vasRoutes);
 
 /* HEALTH CHECK ROUTES */
 app.get("/", (req, res) => res.status(200).json({ success: true, message: "Bellaj API Active" }));
