@@ -2,7 +2,9 @@ const express = require("express");
 const router = express.Router();
 
 const authController = require("../controllers/authController");
+const { protect } = require("../middleware/authMiddleware");
 
+// Kariya idan wani aiki bai gama loading ba
 const safeHandler = (handlerName) => {
   const handler = authController[handlerName];
 
@@ -18,29 +20,41 @@ const safeHandler = (handlerName) => {
   };
 };
 
-// ================================
-// AUTH ROUTES
-// ================================
+// ==========================================
+// 1. PUBLIC ROUTES (Babu bukatar Token)
+// ==========================================
 
-// Register User
+// Register User (Customer / Agent)
 router.post("/register", safeHandler("register"));
 
-// Normal Login
+// User & Agent Login
 router.post("/login", safeHandler("login"));
 
-// Supervisor Login
-router.post("/supervisor-login", safeHandler("supervisorLogin"));
+// Supervisor / Leader Login (Fallback zuwa babban login idan babu supervisorLogin)
+router.post(
+  "/supervisor-login",
+  typeof authController.supervisorLogin === "function"
+    ? authController.supervisorLogin
+    : safeHandler("login")
+);
 
-// Paystack Webhook
+// Paystack Automated Funding Webhooks (Dole ne su zama a bude ga Paystack)
 router.post("/paystack/webhook", safeHandler("paystackWebhook"));
+router.post("/webhook", safeHandler("paystackWebhook"));
 
-// Update Password
-router.put("/update-password", safeHandler("updatePassword"));
+// ==========================================
+// 2. PROTECTED ROUTES (Dole ne mutum ya yi login)
+// ==========================================
 
-// Update PIN
-router.put("/update-pin", safeHandler("updatePin"));
+// Get Current User Profile (Haɗa /profile da /me don dacewa da frontend)
+router.get("/profile", protect, safeHandler("getUserProfile"));
+router.get("/me", protect, safeHandler("getUserProfile"));
 
-// Get User Profile
-router.get("/profile", safeHandler("getUserProfile"));
+// Update Security Credentials
+router.put("/update-password", protect, safeHandler("updatePassword"));
+router.patch("/update-password", protect, safeHandler("updatePassword"));
+
+router.put("/update-pin", protect, safeHandler("updatePin"));
+router.patch("/update-pin", protect, safeHandler("updatePin"));
 
 module.exports = router;
