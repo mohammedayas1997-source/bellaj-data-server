@@ -1,8 +1,26 @@
 const User = require("../models/User");
 const TargetHistory = require("../models/TargetHistory");
+const Transaction = require("../models/Transaction");
 const mongoose = require("mongoose");
 
 const APP_NAME = "Bellaj Data Hub";
+
+// Helper don nemo User ta hanyar ID, Email ko Phone
+const findSupervisor = async (identifier) => {
+  if (!identifier) return null;
+  const cleanId = String(identifier).trim();
+
+  let query = { role: "supervisor" };
+  if (mongoose.Types.ObjectId.isValid(cleanId)) {
+    query._id = cleanId;
+  } else {
+    query.$or = [
+      { email: cleanId.toLowerCase() },
+      { phone: cleanId },
+    ];
+  }
+  return await User.findOne(query);
+};
 
 /**
  * @desc    Leader assigns target to a Supervisor
@@ -11,92 +29,286 @@ const APP_NAME = "Bellaj Data Hub";
  */
 exports.assignSupervisorTarget = async (req, res) => {
   try {
-    const { supervisorId, dataGoal, agentGoal, month } = req.body;
+    const { supervisorId, targetUserId, dataGoal, agentGoal, salesGoal, month, note } = req.body;
+    const targetRef = supervisorId || targetUserId || req.body.id;
 
-    if (!supervisorId) {
+    if (!targetRef) {
       return res.status(400).json({
         success: false,
-        message: "Please provide supervisorId",
+        message: "Please provide supervisorId, email, or phone",
       });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(supervisorId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid supervisorId",
-      });
-    }
-
-    const supervisor = await User.findOne({
-      _id: supervisorId,
-      role: "supervisor",
-    });
+    const supervisor = await findSupervisor(targetRef);
 
     if (!supervisor) {
       return res.status(404).json({
         success: false,
-        message: "Supervisor not found",
+        message: "Supervisor profile could not be found",
       });
     }
 
     const currentTargets = supervisor.targets || {};
 
     const newTargets = {
-      dataGoal:
-        dataGoal !== undefined
-          ? Number(dataGoal)
-          : currentTargets.dataGoal || 0,
-
-      agentGoal:
-        agentGoal !== undefined
-          ? Number(agentGoal)
-          : currentTargets.agentGoal || 0,
-
+      dataGoal: dataGoal !== undefined ? Number(dataGoal) : currentTargets.dataGoal || 0,
+      agentGoal: agentGoal !== undefined ? Number(agentGoal) : currentTargets.agentGoal || 0,
+      salesGoal: salesGoal !== undefined ? Number(salesGoal) : currentTargets.salesGoal || 0,
       currentMonth:
         month ||
         currentTargets.currentMonth ||
-        new Date().toLocaleString("en-US", {
-          month: "long",
-        }),
+        new Date().toLocaleString("en-US", { month: "long" }) + " " + new Date().getFullYear(),
     };
 
     if (
       Number.isNaN(newTargets.dataGoal) ||
-      Number.isNaN(newTargets.agentGoal)
+      Number.isNaN(newTargets.agentGoal) ||
+      Number.isNaN(newTargets.salesGoal)
     ) {
       return res.status(400).json({
         success: false,
-        message: "dataGoal and agentGoal must be valid numbers",
+        message: "All goal targets must be valid numbers",
       });
     }
 
     supervisor.targets = newTargets;
-    supervisor.assignedLeader = req.user?._id;
+    if (req.user?._id) supervisor.assignedLeader = req.user._id;
     supervisor.markModified("targets");
 
     await supervisor.save();
 
-    await TargetHistory.create({
-      assignedTo: supervisor._id,
-      assignedBy: req.user?._id,
-      dataGoal: newTargets.dataGoal,
-      agentGoal: newTargets.agentGoal,
-      month: newTargets.currentMonth,
-      note: `${APP_NAME} supervisor target assigned`,
-    }).catch(() => null);
+    if (TargetHistory) {
+      await TargetHistory.create({
+        assignedTo: supervisor._id,
+        assignedBy: req.user?._id,
+        dataGoal: newTargets.dataGoal,
+        agentGoal: newTargets.agentGoal,
+        salesGoal: newTargets.salesGoal,
+        month: newTargets.currentMonth,
+        note: note || `${APP_NAME} supervisor target assigned`,
+      }).catch(() => null);
+    }
 
     return res.status(200).json({
       success: true,
-      message: "Bellaj supervisor target assigned successfully",
+      message: `${APP_NAME} supervisor target assigned successfully`,
       targets: supervisor.targets,
+      supervisor: {
+        id: supervisor._id,
+        name: supervisor.name || `${supervisor.firstName || ""} ${supervisor.surname || ""}`.trim(),
+        email: supervisor.email,
+      },
     });
   } catch (error) {
     console.error("Bellaj Assign Target Error:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
 
-    return res.status(500).json({
-      success: false,
-      error: error.message,
+/**
+ * @desc    Get Detailed Stats for Leader Dashboard
+ * @route   GET /api/v1/leader/dashboard
+ * @access  Leader/Admin
+ */
+exports.getLeaderDashboard = async (req, res) => {
+  try {
+    // 1. Nemo duka supervisors masu alaka da wannan Leader ko duka supervisors idan ba a raba su ba
+    let query = { role: "supervisor" };
+    if (req.user?._id && req.user.role === "leader") {
+      const assignedCount = await User.countDocuments({
+        role: "supervisor",
+        assignedLeader: req.user._id,
+      });
+      if (assignedCount > 0) {
+        query.assignedLeader = req.user._id;
+      }
+    }
+
+    const supervisors = await User.find(query).select("-password").lean();
+
+    // 2. Kididdigar bayanan kowane supervisor (Agents, Data Sold, Revenue)
+    const supDetails = await Promise.all(
+      supervisors.map(async (sup) => {
+        const [agentsCount, agentIds] = await Promise.all([
+          User.countDocuments({
+            role: "agent",
+            assignedSupervisor: sup._id,
+          }),
+          User.find({ role: "agent", assignedSupervisor: sup._id }).distinct("_id"),
+        ]);
+
+        // Lissafin cinikin da tawagar wannan supervisor ta yi
+        let teamPerformance = 0;
+        let revenue = 0;
+
+        if (Transaction && agentIds.length > 0) {
+          const txAggregate = await Transaction.aggregate([
+            { $match: { user: { $in: agentIds }, status: "success" } },
+            {
+              $group: {
+                _id: null,
+                totalRevenue: { $sum: "$amount" },
+                totalGB: { $sum: "$volumeGB" },
+              },
+            },
+          ]);
+
+          if (txAggregate.length > 0) {
+            revenue = txAggregate[0].totalRevenue || 0;
+            teamPerformance = txAggregate[0].totalGB || 0;
+          }
+        }
+
+        return {
+          id: sup._id,
+          _id: sup._id,
+          name:
+            sup.name ||
+            sup.fullName ||
+            `${sup.firstName || ""} ${sup.surname || ""}`.trim() ||
+            "Supervisor",
+          phone: sup.phone || "",
+          email: sup.email || "",
+          address: sup.address || "",
+          isSuspended: sup.isSuspended || sup.status === "suspended" || false,
+          teamSize: agentsCount || sup.totalAgents || (sup.agents ? sup.agents.length : 0),
+          teamPerformance: teamPerformance || sup.totalGB || 0,
+          revenue: revenue || sup.totalSalesValue || 0,
+          targets: sup.targets || {
+            dataGoal: 0,
+            agentGoal: 0,
+            salesGoal: 0,
+            currentMonth: new Date().toLocaleString("en-US", { month: "long" }),
+          },
+        };
+      })
+    );
+
+    // 3. Tattara gabaɗayan lissafin network (Network Stats)
+    const totalAgentsCount = supDetails.reduce((sum, s) => sum + Number(s.teamSize || 0), 0);
+    const overallDataSold = supDetails.reduce((sum, s) => sum + Number(s.teamPerformance || 0), 0);
+    const totalRevenue = supDetails.reduce((sum, s) => sum + Number(s.revenue || 0), 0);
+
+    return res.status(200).json({
+      success: true,
+      message: `${APP_NAME} leader dashboard loaded successfully`,
+      networkStats: {
+        totalSupervisors: supDetails.length,
+        totalAgents: totalAgentsCount,
+        overallDataSold,
+        totalRevenue,
+      },
+      count: supDetails.length,
+      supervisors: supDetails,
+      data: {
+        networkStats: {
+          totalSupervisors: supDetails.length,
+          totalAgents: totalAgentsCount,
+          overallDataSold,
+          totalRevenue,
+        },
+        supervisors: supDetails,
+      },
     });
+  } catch (error) {
+    console.error("Bellaj Leader Dashboard Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Toggle Supervisor Status (Suspend/Activate)
+ * @route   PATCH /api/v1/leader/supervisor-status/:supervisorId
+ * @access  Leader/Admin
+ */
+exports.toggleSupervisorStatus = async (req, res) => {
+  try {
+    const { supervisorId } = req.params;
+    const supervisor = await findSupervisor(supervisorId);
+
+    if (!supervisor) {
+      return res.status(404).json({
+        success: false,
+        message: "Supervisor profile not found",
+      });
+    }
+
+    supervisor.isSuspended = !supervisor.isSuspended;
+    supervisor.status = supervisor.isSuspended ? "suspended" : "active";
+    await supervisor.save();
+
+    return res.status(200).json({
+      success: true,
+      message: supervisor.isSuspended
+        ? "Supervisor suspended successfully"
+        : "Supervisor activated successfully",
+      isSuspended: supervisor.isSuspended,
+      status: supervisor.status,
+    });
+  } catch (error) {
+    console.error("Bellaj Toggle Supervisor Error:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * @desc    Create New Supervisor
+ * @route   POST /api/v1/leader/create-supervisor
+ * @access  Leader/Admin
+ */
+exports.createNewSupervisor = async (req, res) => {
+  try {
+    const { firstName, surname, name, email, phone, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required",
+      });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanPhone = phone ? phone.trim() : "";
+
+    const query = [{ email: cleanEmail }];
+    if (cleanPhone) query.push({ phone: cleanPhone });
+
+    const existingUser = await User.findOne({ $or: query });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "An account with this email or phone number already exists",
+      });
+    }
+
+    const resolvedFirstName = firstName || (name ? name.split(" ")[0] : "Supervisor");
+    const resolvedSurname = surname || (name && name.split(" ")[1] ? name.split(" ")[1] : "Field");
+
+    const newSupervisor = await User.create({
+      ...req.body,
+      firstName: resolvedFirstName.trim(),
+      surname: resolvedSurname.trim(),
+      name: `${resolvedFirstName} ${resolvedSurname}`.trim(),
+      email: cleanEmail,
+      phone: cleanPhone || "0000000000",
+      password,
+      role: "supervisor",
+      assignedLeader: req.user?._id || undefined,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: `${APP_NAME} supervisor created successfully`,
+      data: {
+        _id: newSupervisor._id,
+        name: newSupervisor.name,
+        email: newSupervisor.email,
+        role: newSupervisor.role,
+      },
+    });
+  } catch (error) {
+    console.error("Bellaj Create Supervisor Error:", error);
+    return res.status(400).json({ success: false, error: error.message });
   }
 };
 
@@ -108,202 +320,33 @@ exports.assignSupervisorTarget = async (req, res) => {
 exports.downloadSupervisorReport = async (req, res) => {
   try {
     const { supervisorId } = req.params;
+    const supervisor = await findSupervisor(supervisorId);
 
-    if (!mongoose.Types.ObjectId.isValid(supervisorId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid supervisorId",
-      });
+    if (!supervisor) {
+      return res.status(404).json({ success: false, message: "Supervisor not found" });
     }
 
-    const history = await TargetHistory.find({
-      assignedTo: supervisorId,
-    })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    if (!history || history.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No target history found",
-      });
+    let history = [];
+    if (TargetHistory) {
+      history = await TargetHistory.find({ assignedTo: supervisor._id })
+        .sort({ createdAt: -1 })
+        .lean();
     }
 
     return res.status(200).json({
       success: true,
-      message: "Bellaj supervisor target report loaded successfully",
+      message: "Supervisor target report loaded successfully",
       count: history.length,
+      supervisor: {
+        id: supervisor._id,
+        name: supervisor.name,
+        email: supervisor.email,
+      },
       data: history,
     });
   } catch (error) {
     console.error("Bellaj Supervisor Report Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-};
-
-/**
- * @desc    Toggle Supervisor Status
- * @route   PATCH /api/v1/leader/supervisor-status/:supervisorId
- * @access  Leader/Admin
- */
-exports.toggleSupervisorStatus = async (req, res) => {
-  try {
-    const { supervisorId } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(supervisorId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid supervisorId",
-      });
-    }
-
-    const user = await User.findOne({
-      _id: supervisorId,
-      role: "supervisor",
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "Supervisor not found",
-      });
-    }
-
-    user.isSuspended = !user.isSuspended;
-    await user.save();
-
-    return res.status(200).json({
-      success: true,
-      message: user.isSuspended
-        ? "Supervisor suspended successfully"
-        : "Supervisor activated successfully",
-      isSuspended: user.isSuspended,
-    });
-  } catch (error) {
-    console.error("Bellaj Toggle Supervisor Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-};
-
-/**
- * @desc    Create New Supervisor
- * @route   POST /api/v1/leader/create-supervisor
- * @access  Leader/Admin
- */
-exports.createNewSupervisor = async (req, res) => {
-  try {
-    const { firstName, surname, email, phone, password } = req.body;
-
-    if (!firstName || !surname || !email || !phone || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "firstName, surname, email, phone and password are required",
-      });
-    }
-
-    const existingUser = await User.findOne({
-      $or: [
-        {
-          email: email.toLowerCase().trim(),
-        },
-        {
-          phone: phone.trim(),
-        },
-      ],
-    });
-
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: "Email or phone number already exists",
-      });
-    }
-
-    const newSupervisor = await User.create({
-      ...req.body,
-      firstName: firstName.trim(),
-      surname: surname.trim(),
-      name: `${firstName} ${surname}`.trim(),
-      email: email.toLowerCase().trim(),
-      phone: phone.trim(),
-      role: "supervisor",
-      assignedLeader: req.user?._id,
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "Bellaj supervisor created successfully",
-      data: newSupervisor,
-    });
-  } catch (error) {
-    console.error("Bellaj Create Supervisor Error:", error);
-
-    return res.status(400).json({
-      success: false,
-      error: error.message,
-    });
-  }
-};
-
-/**
- * @desc    Get Detailed Stats for Leader Dashboard
- * @route   GET /api/v1/leader/dashboard
- * @access  Leader/Admin
- */
-exports.getLeaderDashboard = async (req, res) => {
-  try {
-    const supervisors = await User.find({
-      role: "supervisor",
-      assignedLeader: req.user?._id,
-    }).lean();
-
-    const supDetails = await Promise.all(
-      supervisors.map(async (sup) => {
-        const agentsCount = await User.countDocuments({
-          role: "agent",
-          assignedSupervisor: sup._id,
-        });
-
-        return {
-          id: sup._id,
-          name:
-            sup.name || `${sup.firstName || ""} ${sup.surname || ""}`.trim(),
-          phone: sup.phone,
-          email: sup.email,
-          isSuspended: sup.isSuspended || false,
-          teamSize: agentsCount,
-          targets: sup.targets || {
-            dataGoal: 0,
-            agentGoal: 0,
-            currentMonth: new Date().toLocaleString("en-US", {
-              month: "long",
-            }),
-          },
-        };
-      }),
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "Bellaj leader dashboard loaded successfully",
-      count: supDetails.length,
-      supervisors: supDetails,
-    });
-  } catch (error) {
-    console.error("Bellaj Leader Dashboard Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -323,60 +366,36 @@ exports.assignAgentToSupervisor = async (req, res) => {
       });
     }
 
-    if (
-      !mongoose.Types.ObjectId.isValid(agentId) ||
-      !mongoose.Types.ObjectId.isValid(supervisorId)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid agentId or supervisorId",
-      });
+    const supervisor = await findSupervisor(supervisorId);
+    if (!supervisor) {
+      return res.status(404).json({ success: false, message: "Supervisor not found" });
     }
 
-    const supervisor = await User.findOne({
-      _id: supervisorId,
-      role: "supervisor",
-    });
-
-    if (!supervisor) {
-      return res.status(404).json({
-        success: false,
-        message: "Supervisor not found",
-      });
+    let agentQuery = { role: "agent" };
+    if (mongoose.Types.ObjectId.isValid(agentId)) {
+      agentQuery._id = agentId;
+    } else {
+      agentQuery.$or = [{ email: agentId.toLowerCase().trim() }, { phone: agentId.trim() }];
     }
 
     const agent = await User.findOneAndUpdate(
-      {
-        _id: agentId,
-        role: "agent",
-      },
-      {
-        assignedSupervisor: supervisorId,
-      },
-      {
-        new: true,
-      },
+      agentQuery,
+      { assignedSupervisor: supervisor._id },
+      { new: true }
     );
 
     if (!agent) {
-      return res.status(404).json({
-        success: false,
-        message: "Agent not found",
-      });
+      return res.status(404).json({ success: false, message: "Agent account not found" });
     }
 
     return res.status(200).json({
       success: true,
-      message: "Bellaj agent assigned to supervisor successfully",
+      message: `Agent assigned to ${supervisor.name} successfully`,
       data: agent,
     });
   } catch (error) {
     console.error("Bellaj Assign Agent Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -387,25 +406,20 @@ exports.assignAgentToSupervisor = async (req, res) => {
  */
 exports.getAllAgents = async (req, res) => {
   try {
-    const agents = await User.find({
-      role: "agent",
-    })
-      .populate("assignedSupervisor", "name firstName surname phone")
+    const agents = await User.find({ role: "agent" })
+      .populate("assignedSupervisor", "name firstName surname phone email")
       .select("-password")
       .lean();
 
     return res.status(200).json({
       success: true,
-      message: "Bellaj agents loaded successfully",
+      message: `${APP_NAME} agents loaded successfully`,
       count: agents.length,
       agents,
+      data: agents,
     });
   } catch (error) {
     console.error("Bellaj Get Agents Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };

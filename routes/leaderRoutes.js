@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+
 const {
   getLeaderDashboard,
   getAllAgents,
@@ -8,20 +9,106 @@ const {
   assignSupervisorTarget,
   assignAgentToSupervisor,
   downloadSupervisorReport,
-} = require("../controllers/leaderController"); // Tabbatar sunan file din ya dace
+} = require("../controllers/leaderController");
 
 const { protect, authorize } = require("../middleware/authMiddleware");
 
-router.use(protect);
-router.use(authorize("leader", "admin"));
+// Kariya: Idan controller bai riga ya ayyana function ba, kada sabar ta fadi
+const safeHandler = (handler, name) => {
+  if (typeof handler === "function") return handler;
 
-// Wadannan sunayen dole su dace da "exports.sunanFunction" na Controller
-router.get("/dashboard", getLeaderDashboard);
-router.get("/agents", getAllAgents);
-router.post("/create-supervisor", createNewSupervisor);
-router.patch("/toggle-supervisor/:supervisorId", toggleSupervisorStatus);
-router.post("/assign-target", assignSupervisorTarget);
-router.post("/assign-agent", assignAgentToSupervisor);
-router.get("/report/:supervisorId", downloadSupervisorReport);
+  return (req, res) => {
+    return res.status(501).json({
+      success: false,
+      message: `${name} is not implemented in leaderController`,
+    });
+  };
+};
+
+// TSARO: Dole ne mutum ya yi login kuma ya kasance leader, admin, ko superadmin
+router.use(protect);
+router.use(authorize("leader", "admin", "superadmin"));
+
+// ==========================================
+// 1. DASHBOARD & ANALYTICS
+// ==========================================
+router.get(
+  "/dashboard",
+  safeHandler(getLeaderDashboard, "getLeaderDashboard")
+);
+
+router.get(
+  "/leader-dashboard",
+  safeHandler(getLeaderDashboard, "getLeaderDashboard")
+);
+
+// ==========================================
+// 2. AGENT OPERATIONS
+// ==========================================
+router.get(
+  "/agents",
+  safeHandler(getAllAgents, "getAllAgents")
+);
+
+router.post(
+  "/assign-agent",
+  safeHandler(assignAgentToSupervisor, "assignAgentToSupervisor")
+);
+
+router.patch(
+  "/assign-agent",
+  safeHandler(assignAgentToSupervisor, "assignAgentToSupervisor")
+);
+
+// ==========================================
+// 3. SUPERVISOR MANAGEMENT
+// ==========================================
+router.post(
+  "/create-supervisor",
+  safeHandler(createNewSupervisor, "createNewSupervisor")
+);
+
+router.patch(
+  "/toggle-supervisor/:supervisorId",
+  safeHandler(toggleSupervisorStatus, "toggleSupervisorStatus")
+);
+
+router.patch(
+  "/supervisor-status/:supervisorId",
+  safeHandler(toggleSupervisorStatus, "toggleSupervisorStatus")
+);
+
+router.patch(
+  "/supervisors/toggle-status/:supervisorId",
+  safeHandler(toggleSupervisorStatus, "toggleSupervisorStatus")
+);
+
+// ==========================================
+// 4. TARGETS & AUDIT REPORTS
+// ==========================================
+router.post(
+  "/assign-target",
+  safeHandler(assignSupervisorTarget, "assignSupervisorTarget")
+);
+
+router.put(
+  "/assign-target",
+  safeHandler(assignSupervisorTarget, "assignSupervisorTarget")
+);
+
+router.get(
+  "/report/:supervisorId",
+  safeHandler(downloadSupervisorReport, "downloadSupervisorReport")
+);
+
+router.get(
+  "/supervisor-report/:supervisorId",
+  safeHandler(downloadSupervisorReport, "downloadSupervisorReport")
+);
+
+router.get(
+  "/reports/full",
+  safeHandler(downloadSupervisorReport, "downloadSupervisorReport")
+);
 
 module.exports = router;
