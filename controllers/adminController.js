@@ -5,6 +5,7 @@ const NIMCRequest = require("../models/NIMCRequest");
 const BVNRequest = require("../models/BVNRequest");
 const SupportRequest = require("../models/SupportRequest");
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 
 const APP_NAME = "Bellaj Data Hub";
 
@@ -24,6 +25,228 @@ const sendNotification = async (userId, title, message) => {
     }
   } catch (error) {
     console.error("Bellaj notification failed:", error.message);
+  }
+};
+
+/**
+ * @desc    Kirkirar Sabon Supervisor
+ * @route   POST /api/v1/admin/create-supervisor
+ */
+const createSupervisor = async (req, res) => {
+  try {
+    const { firstName, surname, name, email, phone, password } = req.body;
+
+    if (!email || !password || !phone) {
+      return res.status(400).json({
+        success: false,
+        message: "First name, email, phone, and password are required",
+      });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const existing = await User.findOne({ email: cleanEmail });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "User with this email already exists",
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const supervisor = await User.create({
+      name: name || `${firstName || ""} ${surname || ""}`.trim() || "Bellaj Supervisor",
+      firstName: firstName || "Supervisor",
+      surname: surname || "Bellaj",
+      email: cleanEmail,
+      phone: String(phone).trim(),
+      password: hashedPassword,
+      role: "supervisor",
+      isSuspended: false,
+      walletBalance: 0,
+      pin: "0000",
+    });
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_SUPERVISOR_CREATED",
+      details: `Created new supervisor: ${supervisor.email} (${supervisor.phone})`,
+      targetUser: supervisor._id,
+    }).catch(() => null);
+
+    return res.status(201).json({
+      success: true,
+      message: `Supervisor ${supervisor.name} created successfully`,
+      data: {
+        id: supervisor._id,
+        name: supervisor.name,
+        email: supervisor.email,
+        phone: supervisor.phone,
+        role: supervisor.role,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Dakatar da Supervisor ko Cire Dakatarwa (Suspend / Unsuspend)
+ * @route   PATCH /api/v1/admin/users/:id/status
+ */
+const toggleSupervisorStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const newSuspendedState =
+      req.body.isSuspended !== undefined
+        ? Boolean(req.body.isSuspended)
+        : !user.isSuspended;
+
+    user.isSuspended = newSuspendedState;
+    user.status = newSuspendedState ? "suspended" : "active";
+    await user.save();
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_SUPERVISOR_STATUS_TOGGLED",
+      details: `Supervisor ${user.email} marked as ${newSuspendedState ? "SUSPENDED" : "ACTIVE"}`,
+      targetUser: user._id,
+    }).catch(() => null);
+
+    return res.status(200).json({
+      success: true,
+      message: `Supervisor status updated to ${newSuspendedState ? "Suspended" : "Active"}`,
+      data: user,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Sauya Supervisor ga Agent (Transfer Agent)
+ * @route   PUT /api/v1/admin/transfer-agent
+ */
+const transferAgent = async (req, res) => {
+  try {
+    const { agentId, supervisorId, targetSupervisorId } = req.body;
+    const destSupervisorId = targetSupervisorId || supervisorId;
+
+    if (!agentId || !destSupervisorId) {
+      return res.status(400).json({
+        success: false,
+        message: "Both agentId and targetSupervisorId are required",
+      });
+    }
+
+    const [agent, targetSupervisor] = await Promise.all([
+      User.findById(agentId),
+      User.findById(destSupervisorId),
+    ]);
+
+    if (!agent) {
+      return res.status(404).json({ success: false, message: "Agent not found" });
+    }
+
+    if (!targetSupervisor || (targetSupervisor.role || "").toLowerCase() !== "supervisor") {
+      return res.status(404).json({
+        success: false,
+        message: "Target user is not a registered supervisor",
+      });
+    }
+
+    const previousSupId = agent.assignedSupervisor;
+    agent.assignedSupervisor = targetSupervisor._id;
+    agent.supervisorId = targetSupervisor._id;
+    await agent.save();
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_AGENT_TRANSFERRED",
+      details: `Reassigned agent ${agent.email} to supervisor ${targetSupervisor.email} (Previous: ${previousSupId || "None"})`,
+      targetUser: agent._id,
+    }).catch(() => null);
+
+    await sendNotification(
+      agent._id,
+      "Supervisor Reassigned",
+      `Your supervising officer has been reassigned to ${targetSupervisor.name || targetSupervisor.email}.`
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Agent ${agent.name || agent.email} reassigned to ${targetSupervisor.name} successfully`,
+      data: agent,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Customer Service: Rufe Ticket / Report
+ * @route   PATCH /api/v1/admin/reports/:id/resolve
+ */
+const resolveSupportTicket = async (req, res) => {
+  try {
+    const ticketId = req.params.id;
+    const { status } = req.body;
+
+    const ticket = await SupportRequest.findById(ticketId);
+    if (!ticket) {
+      return res.status(404).json({ success: false, message: "Support ticket not found" });
+    }
+
+    ticket.status = status || "resolved";
+    ticket.resolvedAt = new Date();
+    ticket.resolvedBy = req.user?._id;
+    await ticket.save();
+
+    if (ticket.userId) {
+      await sendNotification(
+        ticket.userId,
+        "Support Ticket Resolved",
+        `Your inquiry regarding "${ticket.subject || ticket.title || "Support"}" has been marked as resolved by customer service.`
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Customer ticket resolved successfully",
+      data: ticket,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Adjust Service Pricing Matrix
+ * @route   PUT /api/v1/admin/pricing
+ */
+const updatePricing = async (req, res) => {
+  try {
+    const { service, serviceType, rate, margin } = req.body;
+    const channel = service || serviceType || "SME_DATA";
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_PRICING_UPDATED",
+      details: `Adjusted live margin for ${channel}: Base ₦${rate}, Margin ₦${margin}`,
+    }).catch(() => null);
+
+    return res.status(200).json({
+      success: true,
+      message: `Pricing margin for ${channel} updated successfully`,
+      data: { service: channel, rate: Number(rate), margin: Number(margin) },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -629,7 +852,8 @@ const suspendUser = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    user.status = user.status === "suspended" ? "active" : "suspended";
+    user.isSuspended = !user.isSuspended;
+    user.status = user.isSuspended ? "suspended" : "active";
     await user.save();
 
     return res.status(200).json({
@@ -742,7 +966,10 @@ const trackTransaction = async (req, res) => {
     const { transactionId } = req.params;
 
     let transaction = await Transaction.findOne({
-      $or: [{ reference: transactionId }, { _id: mongoose.Types.ObjectId.isValid(transactionId) ? transactionId : null }],
+      $or: [
+        { reference: transactionId },
+        { _id: mongoose.Types.ObjectId.isValid(transactionId) ? transactionId : null },
+      ],
     }).populate("user", "name firstName surname phone email");
 
     if (transaction) {
@@ -846,7 +1073,7 @@ const handleSupportRequest = async (req, res) => {
         await sendNotification(
           user._id,
           "Transaction Resolved & Refunded",
-          `Your ticket for ₦${tx.amount} has been resolved and refunded.`,
+          `Your ticket for ₦${tx.amount} has been resolved and refunded.`
         );
 
         await user.save();
@@ -859,7 +1086,7 @@ const handleSupportRequest = async (req, res) => {
         await sendNotification(
           user._id,
           "Support Ticket Declined",
-          `Your ticket was declined. Note: ${adminNote || "Closed by admin"}`,
+          `Your ticket was declined. Note: ${adminNote || "Closed by admin"}`
         );
       }
     }
@@ -923,10 +1150,15 @@ module.exports = {
   requestAdminFix,
   getSupportRequests,
   handleSupportRequest,
-  // Sabbin Ayyuka da aka kara:
   broadcastNotification,
   getDashboardStats,
   getSalesStats,
   processDirectRefund,
   getAllTransactions,
+  // Ayyukan da aka dora don Dashboard:
+  createSupervisor,
+  toggleSupervisorStatus,
+  transferAgent,
+  resolveSupportTicket,
+  updatePricing,
 };

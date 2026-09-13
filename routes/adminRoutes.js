@@ -4,7 +4,12 @@ const router = express.Router();
 const { protect, authorize } = require("../middleware/authMiddleware");
 
 const adminController = require("../controllers/adminController");
-const dataPlanController = require("../controllers/dataPlanController");
+let dataPlanController;
+try {
+  dataPlanController = require("../controllers/dataPlanController");
+} catch (e) {
+  dataPlanController = null;
+}
 
 const safeHandler = (handler, name) => {
   if (typeof handler === "function") return handler;
@@ -17,7 +22,9 @@ const safeHandler = (handler, name) => {
   };
 };
 
+// ========================================================
 // KARIYA: Sai mai admin ko superadmin zai iya shiga
+// ========================================================
 router.use(protect);
 router.use(authorize("admin", "superadmin"));
 
@@ -58,7 +65,50 @@ router.post(
 );
 
 // ========================================================
-// 3. USER MANAGEMENT & TARGETS
+// 3. SUPERVISORS & AGENTS DIRECT MANAGEMENT
+// ========================================================
+// Kirkirar Sabon Supervisor
+router.post(
+  "/create-supervisor",
+  safeHandler(adminController.createSupervisor, "createSupervisor")
+);
+router.post(
+  "/users/create",
+  safeHandler(adminController.createSupervisor, "createSupervisor")
+);
+
+// Dakatar / Kunna Supervisor (Status Toggle)
+router.patch(
+  "/users/:id/status",
+  safeHandler(adminController.toggleSupervisorStatus, "toggleSupervisorStatus")
+);
+router.put(
+  "/users/:id",
+  safeHandler(adminController.toggleSupervisorStatus, "toggleSupervisorStatus")
+);
+
+// Transfer Agent zuwa wani Supervisor
+router.put(
+  "/transfer-agent",
+  safeHandler(adminController.transferAgent, "transferAgent")
+);
+router.post(
+  "/assign-supervisor",
+  safeHandler(adminController.transferAgent, "transferAgent")
+);
+
+// Sauya Farashin Riba (Live Margin Adjustment)
+router.put(
+  "/pricing",
+  safeHandler(adminController.updatePricing, "updatePricing")
+);
+router.post(
+  "/pricing/update",
+  safeHandler(adminController.updatePricing, "updatePricing")
+);
+
+// ========================================================
+// 4. USER DIRECTORY & TARGETS
 // ========================================================
 router.get("/users", safeHandler(adminController.getAllUsers, "getAllUsers"));
 
@@ -71,6 +121,11 @@ router.get("/agents", safeHandler(adminController.getAgents, "getAgents"));
 
 router.post(
   "/targets",
+  safeHandler(adminController.assignTarget, "assignTarget")
+);
+
+router.post(
+  "/assign-target",
   safeHandler(adminController.assignTarget, "assignTarget")
 );
 
@@ -90,7 +145,7 @@ router.patch(
 );
 
 // ========================================================
-// 4. WALLET MANAGEMENT & DIRECT REFUNDS
+// 5. WALLET MANAGEMENT & DIRECT REFUNDS
 // ========================================================
 router.patch(
   "/toggle-wallet-status",
@@ -128,7 +183,7 @@ router.patch(
 );
 
 // ========================================================
-// 5. ACTIVITY LOGS & SUPPORT TICKETS
+// 6. ACTIVITY LOGS & CUSTOMER SERVICE TICKETS
 // ========================================================
 router.get(
   "/activities",
@@ -145,6 +200,16 @@ router.get(
   safeHandler(adminController.getSupportRequests, "getSupportRequests")
 );
 
+router.patch(
+  "/reports/:id/resolve",
+  safeHandler(adminController.resolveSupportTicket, "resolveSupportTicket")
+);
+
+router.put(
+  "/reports/:id",
+  safeHandler(adminController.resolveSupportTicket, "resolveSupportTicket")
+);
+
 router.post(
   "/request-admin-fix",
   safeHandler(adminController.requestAdminFix, "requestAdminFix")
@@ -156,7 +221,7 @@ router.patch(
 );
 
 // ========================================================
-// 6. NIMC REQUESTS
+// 7. NIMC REQUESTS
 // ========================================================
 router.get(
   "/nimc-requests",
@@ -174,7 +239,7 @@ router.patch(
 );
 
 // ========================================================
-// 7. BVN REQUESTS
+// 8. BVN REQUESTS
 // ========================================================
 router.get(
   "/bvn-requests",
@@ -192,7 +257,7 @@ router.patch(
 );
 
 // ========================================================
-// 8. DATA PLANS CONFIGURATION
+// 9. DATA PLANS CONFIGURATION
 // ========================================================
 router.get(
   "/data-plans",
