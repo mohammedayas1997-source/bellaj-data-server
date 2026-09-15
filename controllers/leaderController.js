@@ -2,6 +2,7 @@ const User = require("../models/User");
 const TargetHistory = require("../models/TargetHistory");
 const Transaction = require("../models/Transaction");
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 
 const APP_NAME = "Bellaj Data Hub";
 
@@ -112,7 +113,6 @@ exports.assignSupervisorTarget = async (req, res) => {
  */
 exports.getLeaderDashboard = async (req, res) => {
   try {
-    // 1. Nemo duka supervisors masu alaka da wannan Leader ko duka supervisors idan ba a raba su ba
     let query = { role: "supervisor" };
     if (req.user?._id && req.user.role === "leader") {
       const assignedCount = await User.countDocuments({
@@ -126,7 +126,6 @@ exports.getLeaderDashboard = async (req, res) => {
 
     const supervisors = await User.find(query).select("-password").lean();
 
-    // 2. Kididdigar bayanan kowane supervisor (Agents, Data Sold, Revenue)
     const supDetails = await Promise.all(
       supervisors.map(async (sup) => {
         const [agentsCount, agentIds] = await Promise.all([
@@ -137,7 +136,6 @@ exports.getLeaderDashboard = async (req, res) => {
           User.find({ role: "agent", assignedSupervisor: sup._id }).distinct("_id"),
         ]);
 
-        // Lissafin cinikin da tawagar wannan supervisor ta yi
         let teamPerformance = 0;
         let revenue = 0;
 
@@ -184,7 +182,6 @@ exports.getLeaderDashboard = async (req, res) => {
       })
     );
 
-    // 3. Tattara gabaɗayan lissafin network (Network Stats)
     const totalAgentsCount = supDetails.reduce((sum, s) => sum + Number(s.teamSize || 0), 0);
     const overallDataSold = supDetails.reduce((sum, s) => sum + Number(s.teamPerformance || 0), 0);
     const totalRevenue = supDetails.reduce((sum, s) => sum + Number(s.revenue || 0), 0);
@@ -252,7 +249,7 @@ exports.toggleSupervisorStatus = async (req, res) => {
 };
 
 /**
- * @desc    Create New Supervisor
+ * @desc    Create New Supervisor (GYARTACCE TARE DA BCRYPT DA CIKAKKEN SCHEMA)
  * @route   POST /api/v1/leader/create-supervisor
  * @access  Leader/Admin
  */
@@ -260,20 +257,20 @@ exports.createNewSupervisor = async (req, res) => {
   try {
     const { firstName, surname, name, email, phone, password } = req.body;
 
-    if (!email || !password) {
+    if (!email || !password || !phone) {
       return res.status(400).json({
         success: false,
-        message: "Email and password are required",
+        message: "First name, email, phone, and password are required",
       });
     }
 
     const cleanEmail = email.toLowerCase().trim();
-    const cleanPhone = phone ? phone.trim() : "";
+    const cleanPhone = phone.trim();
 
-    const query = [{ email: cleanEmail }];
-    if (cleanPhone) query.push({ phone: cleanPhone });
+    const existingUser = await User.findOne({
+      $or: [{ email: cleanEmail }, { phone: cleanPhone }],
+    });
 
-    const existingUser = await User.findOne({ $or: query });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -281,18 +278,25 @@ exports.createNewSupervisor = async (req, res) => {
       });
     }
 
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
     const resolvedFirstName = firstName || (name ? name.split(" ")[0] : "Supervisor");
     const resolvedSurname = surname || (name && name.split(" ")[1] ? name.split(" ")[1] : "Field");
 
     const newSupervisor = await User.create({
-      ...req.body,
       firstName: resolvedFirstName.trim(),
       surname: resolvedSurname.trim(),
-      name: `${resolvedFirstName} ${resolvedSurname}`.trim(),
+      name: (name || `${resolvedFirstName} ${resolvedSurname}`).trim(),
       email: cleanEmail,
-      phone: cleanPhone || "0000000000",
-      password,
+      phone: cleanPhone,
+      password: hashedPassword,
       role: "supervisor",
+      isSuspended: false,
+      status: "active",
+      walletBalance: 0,
+      pin: "0000",
+      bankName: "Wema Bank",
       assignedLeader: req.user?._id || undefined,
     });
 
@@ -303,12 +307,13 @@ exports.createNewSupervisor = async (req, res) => {
         _id: newSupervisor._id,
         name: newSupervisor.name,
         email: newSupervisor.email,
+        phone: newSupervisor.phone,
         role: newSupervisor.role,
       },
     });
   } catch (error) {
     console.error("Bellaj Create Supervisor Error:", error);
-    return res.status(400).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 

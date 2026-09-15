@@ -43,7 +43,7 @@ router.get(
 );
 
 // ==========================================
-// 2. AGENT OPERATIONS
+// 2. AGENT OPERATIONS & TRANSFER
 // ==========================================
 router.get(
   "/agents",
@@ -60,11 +60,27 @@ router.patch(
   safeHandler(assignAgentToSupervisor, "assignAgentToSupervisor")
 );
 
+router.put(
+  "/assign-agent",
+  safeHandler(assignAgentToSupervisor, "assignAgentToSupervisor")
+);
+
+router.put(
+  "/transfer-agent",
+  safeHandler(assignAgentToSupervisor, "assignAgentToSupervisor")
+);
+
 // ==========================================
 // 3. SUPERVISOR MANAGEMENT
 // ==========================================
 router.post(
   "/create-supervisor",
+  safeHandler(createNewSupervisor, "createNewSupervisor")
+);
+
+// Fallback don karawa Admin saukin kira
+router.post(
+  "/supervisors/create",
   safeHandler(createNewSupervisor, "createNewSupervisor")
 );
 
