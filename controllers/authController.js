@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 
 let Transaction;
 try {
@@ -287,15 +288,39 @@ exports.login = async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-    const user = await User.findOne({ 
-  email: String(email).toLowerCase().trim() 
-}).select("+password");
+    const normalizedEmail = String(email).toLowerCase().trim();
 
-    if (!user || !(await user.matchPassword(password))) {
+    // 1. Dauko user tare da password koda akwai select: false
+    const user = await User.findOne({ email: normalizedEmail }).select("+password");
+
+    if (!user) {
       return res.status(401).json({
         success: false,
         message: "Invalid email address or password.",
+      });
+    }
+
+    // 2. Kwatanta password kai tsaye ta hanyar bcrypt da kuma fallback na matchPassword
+    let isMatch = false;
+    if (user.password) {
+      isMatch = await bcrypt.compare(String(password), user.password);
+    }
+
+    if (!isMatch && typeof user.matchPassword === "function") {
+      isMatch = await user.matchPassword(String(password));
+    }
+
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email address or password.",
+      });
+    }
+
+    if (user.isSuspended) {
+      return res.status(403).json({
+        success: false,
+        message: "Your account is suspended. Please contact administrator.",
       });
     }
 
