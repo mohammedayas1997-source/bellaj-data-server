@@ -29,6 +29,18 @@ router.use(protect);
 router.use(authorize("admin", "superadmin"));
 
 // ========================================================
+// 0. SYSTEM HEALTH & AUDIT INSPECTION
+// ========================================================
+router.get(
+  "/system/health-check",
+  safeHandler(adminController.getSystemHealth, "getSystemHealth")
+);
+router.get(
+  "/health",
+  safeHandler(adminController.getSystemHealth, "getSystemHealth")
+);
+
+// ========================================================
 // 1. DASHBOARD ANALYTICS & TRANSACTIONS
 // ========================================================
 router.get(
@@ -97,8 +109,16 @@ router.post(
   safeHandler(adminController.transferAgent, "transferAgent")
 );
 
-// Sauya Farashin Riba (Live Margin Adjustment)
+// Sauya Farashin Riba da Duba Farashi (Pricing Controls)
+router.get(
+  "/pricing",
+  safeHandler(adminController.getAllPricing, "getAllPricing")
+);
 router.put(
+  "/pricing",
+  safeHandler(adminController.updatePricing, "updatePricing")
+);
+router.post(
   "/pricing",
   safeHandler(adminController.updatePricing, "updatePricing")
 );

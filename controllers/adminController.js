@@ -6,11 +6,60 @@ const BVNRequest = require("../models/BVNRequest");
 const SupportRequest = require("../models/SupportRequest");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
+const nodemailer = require("nodemailer");
 
 const APP_NAME = "Bellaj Data Hub";
 
-// Helper: Tura notification ga mai amfani guda daya
-const sendNotification = async (userId, title, message) => {
+// ==========================================
+// 0. SCHEMA NA MUSAMMAN DON PRICING MATRIX
+// ==========================================
+// Idan baka da model din Pricing a models/, muna amfani da dynamic mongoose schema
+let Pricing;
+try {
+  Pricing = mongoose.model("Pricing");
+} catch (e) {
+  const pricingSchema = new mongoose.Schema(
+    {
+      service: { type: String, required: true, unique: true, uppercase: true }, // e.g., SME_DATA, MTN_CG, AIRTIME, CABLE_TV, ELECTRICITY
+      provider: { type: String, default: "SYSTEM_DEFAULT" },
+      baseRate: { type: Number, required: true, default: 0 },
+      margin: { type: Number, required: true, default: 0 },
+      agentMargin: { type: Number, default: 0 },
+      retailPrice: { type: Number, required: true, default: 0 },
+      status: { type: String, enum: ["ACTIVE", "DISABLED"], default: "ACTIVE" },
+      updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    },
+    { timestamps: true }
+  );
+  Pricing = mongoose.model("Pricing", pricingSchema);
+}
+
+// Helper: Tura Email ta Nodemailer
+const dispatchEmail = async (to, subject, text, html) => {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return;
+  try {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: `"${APP_NAME} Admin" <${process.env.EMAIL_USER}>`,
+      to,
+      subject,
+      text,
+      html,
+    });
+  } catch (err) {
+    console.error("[Email Delivery Warning]:", err.message);
+  }
+};
+
+// Helper: Tura Notification ga User Guda Daya (App Notification + Optional Email)
+const sendNotification = async (userId, title, message, sendAlsoEmail = false) => {
   try {
     const user = await User.findById(userId);
     if (user) {
@@ -22,16 +71,327 @@ const sendNotification = async (userId, title, message) => {
         isRead: false,
       });
       await user.save();
+
+      if (sendAlsoEmail && user.email) {
+        dispatchEmail(
+          user.email,
+          `${APP_NAME} Alert: ${title}`,
+          message,
+          `<div style="font-family:sans-serif;padding:20px;border-top:4px solid #0B5E3C">
+            <h2 style="color:#0B5E3C">${title}</h2>
+            <p style="color:#334155;font-size:15px;line-height:1.6">${message}</p>
+            <p style="color:#94a3b8;font-size:12px">Sent automatically by Bellaj Data Hub Administrative Engine.</p>
+          </div>`
+        );
+      }
     }
   } catch (error) {
     console.error("Bellaj notification failed:", error.message);
   }
 };
 
+// ==========================================
+// 1. SYSTEM HEALTH & AUDIT INSPECTOR (TABBATAR DA KOMAI NA AIKI)
+// ==========================================
 /**
- * @desc    Kirkirar Sabon Supervisor
- * @route   POST /api/v1/admin/create-supervisor
+ * @desc    Duba lafiyar tsarin kamfani (Database, Models, Environment Variables, Paystack Gateway)
+ * @route   GET /api/v1/admin/system/health-check
  */
+const getSystemHealth = async (req, res) => {
+  try {
+    const dbStatus = mongoose.connection.readyState === 1 ? "CONNECTED" : "DISCONNECTED";
+    const dbName = mongoose.connection.name;
+
+    // Duba Environment Keys masu mahimmanci
+    const envAudit = {
+      MONGO_URI: Boolean(process.env.MONGO_URI || process.env.DATABASE_URL),
+      JWT_SECRET: Boolean(process.env.JWT_SECRET),
+      PAYSTACK_SECRET: Boolean(process.env.PAYSTACK_SECRET_KEY),
+      EMAIL_CONFIG: Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS),
+      NODE_ENV: process.env.NODE_ENV || "development",
+    };
+
+    // Ƙidaya Record din kowane bangare
+    const [userCount, txCount, activeSupervisors, totalPricingRules] = await Promise.all([
+      User.countDocuments().catch(() => 0),
+      Transaction.countDocuments().catch(() => 0),
+      User.countDocuments({ role: "supervisor", isSuspended: false }).catch(() => 0),
+      Pricing.countDocuments().catch(() => 0),
+    ]);
+
+    const isSystemSound = dbStatus === "CONNECTED" && envAudit.JWT_SECRET && envAudit.PAYSTACK_SECRET;
+
+    return res.status(200).json({
+      success: true,
+      systemStatus: isSystemSound ? "OPTIMAL_OPERATIONAL" : "DEGRADED_ATTENTION_REQUIRED",
+      timestamp: new Date().toISOString(),
+      database: {
+        status: dbStatus,
+        name: dbName,
+      },
+      audit: {
+        totalSubscribers: userCount,
+        totalLedgerEntries: txCount,
+        activeFieldSupervisors: activeSupervisors,
+        configuredPricingChannels: totalPricingRules,
+      },
+      environmentConfiguration: envAudit,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// 2. PRICING CONTROLS (SETA PRICE NA DUKKAN SERVICES)
+// ==========================================
+/**
+ * @desc    Adjust or Create Service Pricing Live
+ * @route   PUT /api/v1/admin/pricing
+ */
+const updatePricing = async (req, res) => {
+  try {
+    const { service, serviceType, rate, baseRate, margin, agentMargin, status, provider } = req.body;
+    const channel = String(service || serviceType || "SME_DATA").toUpperCase().trim();
+
+    const unitBase = Number(rate !== undefined ? rate : baseRate || 0);
+    const profitMargin = Number(margin || 0);
+    const subAgentMargin = Number(agentMargin || 0);
+    const totalRetail = unitBase + profitMargin;
+
+    const pricingEntry = await Pricing.findOneAndUpdate(
+      { service: channel },
+      {
+        $set: {
+          service: channel,
+          baseRate: unitBase,
+          margin: profitMargin,
+          agentMargin: subAgentMargin,
+          retailPrice: totalRetail,
+          status: status || "ACTIVE",
+          provider: provider || "SYSTEM_DEFAULT",
+          updatedBy: req.user?._id,
+        },
+      },
+      { upsert: true, new: true, runValidators: true }
+    );
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_PRICING_UPDATED",
+      details: `Set live pricing for ${channel}: Cost=₦${unitBase}, Margin=₦${profitMargin} => Retail=₦${totalRetail}`,
+    }).catch(() => null);
+
+    return res.status(200).json({
+      success: true,
+      message: `Pricing rules for ${channel} committed successfully`,
+      data: pricingEntry,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Dauko jerin dukkan farashin da aka saita
+ * @route   GET /api/v1/admin/pricing
+ */
+const getAllPricing = async (req, res) => {
+  try {
+    const list = await Pricing.find().sort({ service: 1 });
+    return res.status(200).json({
+      success: true,
+      count: list.length,
+      data: list,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// 3. TARGET DEPLOYMENT (TURA TARGET GA SUPERVISORS/AGENTS/KOWA)
+// ==========================================
+/**
+ * @desc    Assign Targets (Agent, Supervisor, ko Global Target)
+ * @route   POST /api/v1/admin/targets
+ */
+const assignTarget = async (req, res) => {
+  try {
+    const {
+      targetUserId,
+      supervisorId,
+      agentId,
+      agentRef,
+      target,
+      salesGoal,
+      amount,
+      dataGoal,
+      agentGoal,
+      month,
+      type,
+      note,
+      isGlobal,
+    } = req.body;
+
+    const resolvedUserRef = String(targetUserId || agentRef || supervisorId || agentId || "").trim();
+    const finalSalesGoal = Number(amount || salesGoal || target || 0);
+    const finalDataGoal = Number(dataGoal || 0);
+    const finalAgentGoal = Number(agentGoal || 0);
+    const targetMonth = month || new Date().toLocaleString("en-US", { month: "long", year: "numeric" });
+
+    const targetPayload = {
+      salesGoal: finalSalesGoal,
+      dataGoal: finalDataGoal,
+      agentGoal: finalAgentGoal,
+      quota: finalSalesGoal,
+      type: type || "MONTHLY_OPERATIONAL",
+      currentMonth: targetMonth,
+      note: note || "Formal Operational Target Set by Corporate Management",
+      assignedAt: new Date(),
+    };
+
+    // Idan Global Target ne (An zaba kowa da kowa)
+    if (isGlobal || resolvedUserRef === "ALL" || resolvedUserRef === "GLOBAL_ALL" || !resolvedUserRef) {
+      await User.updateMany(
+        { role: { $in: ["agent", "supervisor", "user"] } },
+        { $set: { targets: targetPayload } }
+      );
+
+      await Activity.create({
+        staffId: req.user?._id,
+        action: "BELLAJ_GLOBAL_TARGET_SET",
+        details: `Global targets deployed for ${targetMonth}: Sales=₦${finalSalesGoal}, Data=${finalDataGoal}GB, Team=${finalAgentGoal}`,
+      }).catch(() => null);
+
+      return res.status(200).json({
+        success: true,
+        message: `Corporate target deployed globally for ${targetMonth}`,
+        data: targetPayload,
+      });
+    }
+
+    // Idan an tura wa mutum daya ne (ta ID, Email, ko Phone)
+    let query = {};
+    if (mongoose.Types.ObjectId.isValid(resolvedUserRef)) {
+      query._id = resolvedUserRef;
+    } else {
+      query.$or = [{ email: resolvedUserRef.toLowerCase() }, { phone: resolvedUserRef }, { referralId: resolvedUserRef }];
+    }
+
+    const targetUser = await User.findOne(query);
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        message: `Designated beneficiary (${resolvedUserRef}) could not be resolved`,
+      });
+    }
+
+    targetUser.targets = targetPayload;
+    targetUser.markModified("targets");
+    await targetUser.save();
+
+    await sendNotification(
+      targetUser._id,
+      "New Operational Quota Assigned",
+      `Management has assigned your operational targets for ${targetMonth}. Review your performance metrics in console.`,
+      true
+    );
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_TARGET_ASSIGNED",
+      details: `Assigned performance target to ${targetUser.email} for ${targetMonth}`,
+      targetUser: targetUser._id,
+    }).catch(() => null);
+
+    return res.status(200).json({
+      success: true,
+      message: `Performance targets assigned to ${targetUser.name || targetUser.email}`,
+      data: targetUser.targets,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// 4. BROADCAST NOTIFICATIONS (TURA SAKO GA KOWA)
+// ==========================================
+/**
+ * @desc    Tura Notification ga dukkan masu amfani ko wani rukuni (Dashboard + Email + Activity)
+ * @route   POST /api/v1/admin/notifications/broadcast
+ */
+const broadcastNotification = async (req, res) => {
+  try {
+    const { title, message, target, targetAudience, sendEmail } = req.body;
+    const scope = String(target || targetAudience || "ALL").toUpperCase().trim();
+
+    if (!title || !message) {
+      return res.status(400).json({
+        success: false,
+        message: "Notification title and message body are required",
+      });
+    }
+
+    let filter = {};
+    if (scope === "AGENTS") filter = { role: "agent" };
+    else if (scope === "SUPERVISORS") filter = { role: "supervisor" };
+    else if (scope === "SUBSCRIBERS" || scope === "USERS") filter = { role: "user" };
+
+    const newNotification = {
+      title: title.trim(),
+      message: message.trim(),
+      date: new Date(),
+      isRead: false,
+    };
+
+    const updateResult = await User.updateMany(filter, {
+      $push: { notifications: { $each: [newNotification], $position: 0 } },
+    });
+
+    // Idan an zabi a tura da email ga kowa a rukunin
+    if (sendEmail) {
+      const recipients = await User.find(filter).select("email").lean();
+      const emailList = recipients.map((r) => r.email).filter(Boolean);
+
+      // Aika email a bango ba tare da tsayar da request ba
+      if (emailList.length > 0) {
+        dispatchEmail(
+          emailList.slice(0, 50).join(","), // Fara tura rukunin farko
+          `${APP_NAME} Broadcast: ${title}`,
+          message,
+          `<div style="font-family:sans-serif;padding:25px;border-left:5px solid #0B5E3C">
+            <h2 style="color:#0B5E3C;margin-top:0">${title}</h2>
+            <p style="color:#1e293b;font-size:15px;line-height:1.6">${message}</p>
+            <div style="margin-top:20px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b">
+              Official Bellaj Data Hub Corporation Broadcast.
+            </div>
+          </div>`
+        );
+      }
+    }
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_ADMIN_BROADCAST",
+      details: `Notice dispatched [Scope: ${scope}]: "${title}" to ${updateResult.modifiedCount || 0} user(s).`,
+    }).catch(() => null);
+
+    return res.status(200).json({
+      success: true,
+      message: `Notice dispatched successfully to ${updateResult.modifiedCount || 0} account(s).`,
+      recipientCount: updateResult.modifiedCount || 0,
+      scope,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// 5. SUPERVISORS & FIELD DIRECTORS WORKFLOW
+// ==========================================
 const createSupervisor = async (req, res) => {
   try {
     const { firstName, surname, name, email, phone, password } = req.body;
@@ -64,6 +424,7 @@ const createSupervisor = async (req, res) => {
       password: hashedPassword,
       role: "supervisor",
       isSuspended: false,
+      status: "active",
       walletBalance: 0,
       pin: "0000",
     });
@@ -91,10 +452,6 @@ const createSupervisor = async (req, res) => {
   }
 };
 
-/**
- * @desc    Dakatar da Supervisor ko Cire Dakatarwa (Suspend / Unsuspend)
- * @route   PATCH /api/v1/admin/users/:id/status
- */
 const toggleSupervisorStatus = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -128,10 +485,6 @@ const toggleSupervisorStatus = async (req, res) => {
   }
 };
 
-/**
- * @desc    Sauya Supervisor ga Agent (Transfer Agent)
- * @route   PUT /api/v1/admin/transfer-agent
- */
 const transferAgent = async (req, res) => {
   try {
     const { agentId, supervisorId, targetSupervisorId } = req.body;
@@ -160,7 +513,6 @@ const transferAgent = async (req, res) => {
       });
     }
 
-    const previousSupId = agent.assignedSupervisor;
     agent.assignedSupervisor = targetSupervisor._id;
     agent.supervisorId = targetSupervisor._id;
     await agent.save();
@@ -168,7 +520,7 @@ const transferAgent = async (req, res) => {
     await Activity.create({
       staffId: req.user?._id,
       action: "BELLAJ_AGENT_TRANSFERRED",
-      details: `Reassigned agent ${agent.email} to supervisor ${targetSupervisor.email} (Previous: ${previousSupId || "None"})`,
+      details: `Reassigned agent ${agent.email} to supervisor ${targetSupervisor.email}`,
       targetUser: agent._id,
     }).catch(() => null);
 
@@ -188,14 +540,13 @@ const transferAgent = async (req, res) => {
   }
 };
 
-/**
- * @desc    Customer Service: Rufe Ticket / Report
- * @route   PATCH /api/v1/admin/reports/:id/resolve
- */
+// ==========================================
+// 6. CUSTOMER SERVICE & TICKETS
+// ==========================================
 const resolveSupportTicket = async (req, res) => {
   try {
     const ticketId = req.params.id;
-    const { status } = req.body;
+    const { status, resolutionNote } = req.body;
 
     const ticket = await SupportRequest.findById(ticketId);
     if (!ticket) {
@@ -205,13 +556,14 @@ const resolveSupportTicket = async (req, res) => {
     ticket.status = status || "resolved";
     ticket.resolvedAt = new Date();
     ticket.resolvedBy = req.user?._id;
+    if (resolutionNote) ticket.resolutionNote = resolutionNote;
     await ticket.save();
 
     if (ticket.userId) {
       await sendNotification(
         ticket.userId,
         "Support Ticket Resolved",
-        `Your inquiry regarding "${ticket.subject || ticket.title || "Support"}" has been marked as resolved by customer service.`
+        `Your inquiry regarding "${ticket.subject || ticket.title || "Support"}" has been marked as resolved.`
       );
     }
 
@@ -225,82 +577,9 @@ const resolveSupportTicket = async (req, res) => {
   }
 };
 
-/**
- * @desc    Adjust Service Pricing Matrix
- * @route   PUT /api/v1/admin/pricing
- */
-const updatePricing = async (req, res) => {
-  try {
-    const { service, serviceType, rate, margin } = req.body;
-    const channel = service || serviceType || "SME_DATA";
-
-    await Activity.create({
-      staffId: req.user?._id,
-      action: "BELLAJ_PRICING_UPDATED",
-      details: `Adjusted live margin for ${channel}: Base ₦${rate}, Margin ₦${margin}`,
-    }).catch(() => null);
-
-    return res.status(200).json({
-      success: true,
-      message: `Pricing margin for ${channel} updated successfully`,
-      data: { service: channel, rate: Number(rate), margin: Number(margin) },
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-/**
- * @desc    Tura Notification ga kowa ko rukuni na musamman
- * @route   POST /api/v1/admin/notifications/broadcast
- */
-const broadcastNotification = async (req, res) => {
-  try {
-    const { title, message, target } = req.body;
-
-    if (!title || !message) {
-      return res.status(400).json({
-        success: false,
-        message: "Title and message body are required",
-      });
-    }
-
-    let filter = {};
-    if (target === "AGENTS") filter = { role: "agent" };
-    if (target === "SUPERVISORS") filter = { role: "supervisor" };
-    if (target === "SUBSCRIBERS") filter = { role: "user" };
-
-    const newNotification = {
-      title,
-      message,
-      date: new Date(),
-      isRead: false,
-    };
-
-    const updateResult = await User.updateMany(filter, {
-      $push: { notifications: { $each: [newNotification], $position: 0 } },
-    });
-
-    await Activity.create({
-      staffId: req.user?._id,
-      action: "BELLAJ_ADMIN_BROADCAST",
-      details: `Broadcast: "${title}" delivered to ${updateResult.modifiedCount || 0} user(s).`,
-    }).catch(() => null);
-
-    return res.status(200).json({
-      success: true,
-      message: `Notification broadcasted to ${updateResult.modifiedCount || 0} user(s).`,
-      recipientCount: updateResult.modifiedCount || 0,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-/**
- * @desc    Get Admin Live Dashboard Statistics
- * @route   GET /api/v1/admin/dashboard-stats
- */
+// ==========================================
+// 7. FINANCIAL, STATS & ANALYTICS
+// ==========================================
 const getDashboardStats = async (req, res) => {
   try {
     const [
@@ -352,10 +631,6 @@ const getDashboardStats = async (req, res) => {
   }
 };
 
-/**
- * @desc    Get Sales Statistics
- * @route   GET /api/v1/admin/sales-stats
- */
 const getSalesStats = async (req, res) => {
   try {
     const [revenueData, totalSalesCount] = await Promise.all([
@@ -384,10 +659,6 @@ const getSalesStats = async (req, res) => {
   }
 };
 
-/**
- * @desc    Direct User Wallet Refund
- * @route   POST /api/v1/admin/wallet/refund
- */
 const processDirectRefund = async (req, res) => {
   try {
     const { userId, email, amount, reason, transactionId, reference } = req.body;
@@ -466,6 +737,7 @@ const processDirectRefund = async (req, res) => {
       user._id,
       "Wallet Refund Credited",
       `₦${refundAmount.toLocaleString()} has been credited back to your ${APP_NAME} wallet.`,
+      true
     );
 
     return res.status(200).json({
@@ -481,10 +753,6 @@ const processDirectRefund = async (req, res) => {
   }
 };
 
-/**
- * @desc    Approve Pending Transaction Refund
- * @route   PATCH /api/v1/admin/refunds/:id/approve
- */
 const approveRefund = async (req, res) => {
   try {
     const transaction = await Transaction.findById(req.params.id);
@@ -535,7 +803,7 @@ const approveRefund = async (req, res) => {
     await sendNotification(
       user._id,
       "Refund Approved",
-      `Your refund request of ₦${refundAmount.toLocaleString()} has been approved and credited.`,
+      `Your refund request of ₦${refundAmount.toLocaleString()} has been approved and credited.`
     );
 
     return res.status(200).json({
@@ -548,70 +816,6 @@ const approveRefund = async (req, res) => {
   }
 };
 
-/**
- * @desc    Assign Targets (Agent or Supervisor)
- * @route   POST /api/v1/admin/targets
- */
-const assignTarget = async (req, res) => {
-  try {
-    const { supervisorId, agentId, target, type, agentGoal, dataGoal, month } = req.body;
-    const targetUserId = supervisorId || agentId;
-
-    if (!targetUserId || targetUserId === "ALL" || targetUserId === "GLOBAL_ALL") {
-      await Activity.create({
-        staffId: req.user?._id,
-        action: "BELLAJ_GLOBAL_TARGET_SET",
-        details: `Global operational target set: ${target || agentGoal || dataGoal || 0} (${type || "SALES"})`,
-      }).catch(() => null);
-
-      return res.status(200).json({
-        success: true,
-        message: "Global operational target set successfully",
-        data: { target, type, month: month || new Date().toLocaleString("default", { month: "long" }) },
-      });
-    }
-
-    const targetUser = await User.findById(targetUserId);
-    if (!targetUser) {
-      return res.status(404).json({
-        success: false,
-        message: "Target user not found",
-      });
-    }
-
-    const currentTargets = targetUser.targets || {};
-    targetUser.targets = {
-      agentGoal: agentGoal !== undefined ? Number(agentGoal) : currentTargets.agentGoal || 0,
-      dataGoal: dataGoal !== undefined ? Number(dataGoal) : currentTargets.dataGoal || 0,
-      quota: target !== undefined ? Number(target) : currentTargets.quota || 0,
-      type: type || currentTargets.type || "SALES",
-      currentMonth: month || currentTargets.currentMonth || new Date().toLocaleString("default", { month: "long" }),
-    };
-
-    targetUser.markModified("targets");
-    await targetUser.save();
-
-    await Activity.create({
-      staffId: req.user?._id,
-      action: "BELLAJ_TARGET_ASSIGNED",
-      details: `Assigned target to ${targetUser.email}`,
-      targetUser: targetUser._id,
-    }).catch(() => null);
-
-    return res.status(200).json({
-      success: true,
-      message: "Target assigned successfully",
-      data: targetUser.targets,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-/**
- * @desc    Get All Global Transactions
- * @route   GET /api/v1/admin/transactions
- */
 const getAllTransactions = async (req, res) => {
   try {
     const page = Number(req.query.page) || 1;
@@ -638,9 +842,9 @@ const getAllTransactions = async (req, res) => {
   }
 };
 
-/**
- * @desc    NIMC Requests Handlers
- */
+// ==========================================
+// 8. IDENTITY SERVICES: NIMC & BVN
+// ==========================================
 const getAllNIMCRequests = async (req, res) => {
   try {
     const requests = await NIMCRequest.find()
@@ -705,9 +909,6 @@ const approveRequest = async (req, res) => {
   }
 };
 
-/**
- * @desc    BVN Requests Handlers
- */
 const getAllBVNRequests = async (req, res) => {
   try {
     const requests = await BVNRequest.find()
@@ -772,9 +973,9 @@ const approveBVNRequest = async (req, res) => {
   }
 };
 
-/**
- * @desc    User & Role Management Handlers
- */
+// ==========================================
+// 9. GENERAL USER & IDENTITY ROLES
+// ==========================================
 const getAllUsers = async (req, res) => {
   try {
     const users = await User.find().select("-password").sort({ createdAt: -1 });
@@ -946,6 +1147,7 @@ const debitUser = async (req, res) => {
       user._id,
       "Wallet Debit Notice",
       `₦${debitAmount.toLocaleString()} has been debited from your wallet. Reason: ${reason || "Adjustment"}`,
+      true
     );
 
     return res.status(200).json({
@@ -958,9 +1160,6 @@ const debitUser = async (req, res) => {
   }
 };
 
-/**
- * @desc    Transaction Tracking
- */
 const trackTransaction = async (req, res) => {
   try {
     const { transactionId } = req.params;
@@ -1008,9 +1207,6 @@ const trackTransaction = async (req, res) => {
   }
 };
 
-/**
- * @desc    Support Issue Management Handlers
- */
 const requestAdminFix = async (req, res) => {
   try {
     const { transactionId, userId, reason, supportNote } = req.body;
@@ -1073,7 +1269,8 @@ const handleSupportRequest = async (req, res) => {
         await sendNotification(
           user._id,
           "Transaction Resolved & Refunded",
-          `Your ticket for ₦${tx.amount} has been resolved and refunded.`
+          `Your ticket for ₦${tx.amount} has been resolved and refunded.`,
+          true
         );
 
         await user.save();
@@ -1129,36 +1326,54 @@ const getPendingRefunds = async (req, res) => {
 };
 
 module.exports = {
+  // System Health & Audit
+  getSystemHealth,
+
+  // Pricing & Margins
+  updatePricing,
+  getAllPricing,
+
+  // Targets & Operational Quotas
   assignTarget,
+
+  // Notifications & Communication
+  broadcastNotification,
+
+  // Supervisor & Agent Directorate
+  createSupervisor,
+  toggleSupervisorStatus,
+  transferAgent,
+  getSupervisors,
+  getAgents,
+
+  // Customer Service Support
+  resolveSupportTicket,
+  requestAdminFix,
+  getSupportRequests,
+  handleSupportRequest,
+  getSupportActivities,
+
+  // Financial Audits & Refunds
+  getDashboardStats,
+  getSalesStats,
+  getAllTransactions,
+  processDirectRefund,
+  approveRefund,
+  getPendingRefunds,
+  debitUser,
+  toggleWalletStatus,
+  trackTransaction,
+
+  // Identity Verification Services
   getAllNIMCRequests,
   updateToProcessing,
   approveRequest,
   getAllBVNRequests,
   updateBVNStatus,
   approveBVNRequest,
-  getSupervisors,
-  getAgents,
-  approveRefund,
+
+  // User Management
   getAllUsers,
   updateUserRole,
   suspendUser,
-  getSupportActivities,
-  getPendingRefunds,
-  toggleWalletStatus,
-  debitUser,
-  trackTransaction,
-  requestAdminFix,
-  getSupportRequests,
-  handleSupportRequest,
-  broadcastNotification,
-  getDashboardStats,
-  getSalesStats,
-  processDirectRefund,
-  getAllTransactions,
-  // Ayyukan da aka dora don Dashboard:
-  createSupervisor,
-  toggleSupervisorStatus,
-  transferAgent,
-  resolveSupportTicket,
-  updatePricing,
 };
