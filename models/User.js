@@ -49,7 +49,7 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: [true, "Security Error: Password hash is required"],
       minlength: 6,
-      select: false,
+      select: true,
     },
 
     walletBalance: {
