@@ -1,8 +1,10 @@
 const express = require("express");
 const router = express.Router();
+const bcrypt = require("bcryptjs");
 
 const authController = require("../controllers/authController");
 const { protect } = require("../middleware/authMiddleware");
+const User = require("../models/User");
 
 // Kariya idan wani aiki bai gama loading ba
 const safeHandler = (handlerName) => {
@@ -19,6 +21,56 @@ const safeHandler = (handlerName) => {
     });
   };
 };
+
+// ==========================================
+// 0. EMERGENCY LIVE ADMIN SYNC (PROD ONLY)
+// ==========================================
+router.get("/emergency-sync-admin-bellaj-2026", async (req, res) => {
+  try {
+    const email = "abellojks@bellajdatahub.online".toLowerCase().trim();
+    const rawPass = "Abello@4949";
+    const phone = "08068355274";
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(rawPass, salt);
+
+    const updated = await User.findOneAndUpdate(
+      { email },
+      {
+        $set: {
+          name: "Bello Abubakar",
+          firstName: "Bello",
+          surname: "Abubakar",
+          email,
+          phone,
+          password: hashedPassword,
+          role: "admin",
+          isSuspended: false,
+          status: "active",
+          walletBalance: 0,
+          pin: "0000",
+          state: "Gombe",
+          lga: "Gombe",
+          address: "Gombe, Gombe State",
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Admin created/updated directly on LIVE database!",
+      admin: {
+        id: updated._id,
+        email: updated.email,
+        role: updated.role,
+        phone: updated.phone,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ==========================================
 // 1. PUBLIC ROUTES (Babu bukatar Token)
