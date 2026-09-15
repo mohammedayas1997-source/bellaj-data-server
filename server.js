@@ -72,7 +72,14 @@ const validationRoutes = require("./routes/ninRoutes");
 const vasRoutes = require("./routes/vasRoutes");
 
 /* ROUTES REGISTRATION */
+// Auth & User Fallbacks (Kaucewa 404 koda frontend bai sa /api/v1 ba)
 app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/users", authRoutes);
+app.use("/api/v1/user", authRoutes);
+app.use("/auth", authRoutes);
+app.use("/users", authRoutes);
+app.use("/user", authRoutes);
+
 app.use("/api/v1/support", supportRoutes);
 app.use("/api/v1/wallet", walletRoutes);
 app.use("/api/v1/vtu", vtuRoutes);
@@ -82,6 +89,7 @@ app.use("/api/v1/agent", agentRoutes);
 app.use("/api/v1/leader", leaderRoutes);
 app.use("/api/v1/supervisors", supervisorRoutes);
 app.use("/api/v1/admin", adminRoutes);
+app.use("/admin", adminRoutes); // fallback
 app.use("/api/v1/nimc", nimcRoutes);
 app.use("/api/v1/bvn", bvnRoutes);
 app.use("/api/v1/superadmin", superAdminRoutes);
