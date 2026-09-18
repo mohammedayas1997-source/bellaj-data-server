@@ -151,14 +151,21 @@ UserSchema.pre("save", async function (next) {
     this.name = `${this.firstName} ${this.surname}`.toUpperCase().trim();
   }
 
+  // KARIYA: Kar a sake yin hash idan kalmar sirri ta riga ta zama bcrypt hash ($2a$ ko $2b$)
   if (this.isModified("password")) {
-    const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
+    const isAlreadyHashed = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(this.password);
+    if (!isAlreadyHashed) {
+      const salt = await bcrypt.genSalt(12);
+      this.password = await bcrypt.hash(this.password, salt);
+    }
   }
 
   if (this.isModified("pin") && this.pin !== "0000") {
-    const salt = await bcrypt.genSalt(10);
-    this.pin = await bcrypt.hash(this.pin, salt);
+    const isPinHashed = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(this.pin);
+    if (!isPinHashed) {
+      const salt = await bcrypt.genSalt(10);
+      this.pin = await bcrypt.hash(this.pin, salt);
+    }
   }
 
   next();

@@ -13,14 +13,13 @@ const APP_NAME = "Bellaj Data Hub";
 // ==========================================
 // 0. SCHEMA NA MUSAMMAN DON PRICING MATRIX
 // ==========================================
-// Idan baka da model din Pricing a models/, muna amfani da dynamic mongoose schema
 let Pricing;
 try {
   Pricing = mongoose.model("Pricing");
 } catch (e) {
   const pricingSchema = new mongoose.Schema(
     {
-      service: { type: String, required: true, unique: true, uppercase: true }, // e.g., SME_DATA, MTN_CG, AIRTIME, CABLE_TV, ELECTRICITY
+      service: { type: String, required: true, unique: true, uppercase: true },
       provider: { type: String, default: "SYSTEM_DEFAULT" },
       baseRate: { type: Number, required: true, default: 0 },
       margin: { type: Number, required: true, default: 0 },
@@ -58,7 +57,7 @@ const dispatchEmail = async (to, subject, text, html) => {
   }
 };
 
-// Helper: Tura Notification ga User Guda Daya (App Notification + Optional Email)
+// Helper: Tura Notification ga User Guda Daya
 const sendNotification = async (userId, title, message, sendAlsoEmail = false) => {
   try {
     const user = await User.findById(userId);
@@ -91,18 +90,13 @@ const sendNotification = async (userId, title, message, sendAlsoEmail = false) =
 };
 
 // ==========================================
-// 1. SYSTEM HEALTH & AUDIT INSPECTOR (TABBATAR DA KOMAI NA AIKI)
+// 1. SYSTEM HEALTH & AUDIT INSPECTOR
 // ==========================================
-/**
- * @desc    Duba lafiyar tsarin kamfani (Database, Models, Environment Variables, Paystack Gateway)
- * @route   GET /api/v1/admin/system/health-check
- */
 const getSystemHealth = async (req, res) => {
   try {
     const dbStatus = mongoose.connection.readyState === 1 ? "CONNECTED" : "DISCONNECTED";
     const dbName = mongoose.connection.name;
 
-    // Duba Environment Keys masu mahimmanci
     const envAudit = {
       MONGO_URI: Boolean(process.env.MONGO_URI || process.env.DATABASE_URL),
       JWT_SECRET: Boolean(process.env.JWT_SECRET),
@@ -111,7 +105,6 @@ const getSystemHealth = async (req, res) => {
       NODE_ENV: process.env.NODE_ENV || "development",
     };
 
-    // Ƙidaya Record din kowane bangare
     const [userCount, txCount, activeSupervisors, totalPricingRules] = await Promise.all([
       User.countDocuments().catch(() => 0),
       Transaction.countDocuments().catch(() => 0),
@@ -143,12 +136,8 @@ const getSystemHealth = async (req, res) => {
 };
 
 // ==========================================
-// 2. PRICING CONTROLS (SETA PRICE NA DUKKAN SERVICES)
+// 2. PRICING CONTROLS
 // ==========================================
-/**
- * @desc    Adjust or Create Service Pricing Live
- * @route   PUT /api/v1/admin/pricing
- */
 const updatePricing = async (req, res) => {
   try {
     const { service, serviceType, rate, baseRate, margin, agentMargin, status, provider } = req.body;
@@ -192,10 +181,6 @@ const updatePricing = async (req, res) => {
   }
 };
 
-/**
- * @desc    Dauko jerin dukkan farashin da aka saita
- * @route   GET /api/v1/admin/pricing
- */
 const getAllPricing = async (req, res) => {
   try {
     const list = await Pricing.find().sort({ service: 1 });
@@ -210,12 +195,8 @@ const getAllPricing = async (req, res) => {
 };
 
 // ==========================================
-// 3. TARGET DEPLOYMENT (TURA TARGET GA SUPERVISORS/AGENTS/KOWA)
+// 3. TARGET DEPLOYMENT
 // ==========================================
-/**
- * @desc    Assign Targets (Agent, Supervisor, ko Global Target)
- * @route   POST /api/v1/admin/targets
- */
 const assignTarget = async (req, res) => {
   try {
     const {
@@ -251,7 +232,6 @@ const assignTarget = async (req, res) => {
       assignedAt: new Date(),
     };
 
-    // Idan Global Target ne (An zaba kowa da kowa)
     if (isGlobal || resolvedUserRef === "ALL" || resolvedUserRef === "GLOBAL_ALL" || !resolvedUserRef) {
       await User.updateMany(
         { role: { $in: ["agent", "supervisor", "user"] } },
@@ -271,7 +251,6 @@ const assignTarget = async (req, res) => {
       });
     }
 
-    // Idan an tura wa mutum daya ne (ta ID, Email, ko Phone)
     let query = {};
     if (mongoose.Types.ObjectId.isValid(resolvedUserRef)) {
       query._id = resolvedUserRef;
@@ -316,12 +295,8 @@ const assignTarget = async (req, res) => {
 };
 
 // ==========================================
-// 4. BROADCAST NOTIFICATIONS (TURA SAKO GA KOWA)
+// 4. BROADCAST NOTIFICATIONS
 // ==========================================
-/**
- * @desc    Tura Notification ga dukkan masu amfani ko wani rukuni (Dashboard + Email + Activity)
- * @route   POST /api/v1/admin/notifications/broadcast
- */
 const broadcastNotification = async (req, res) => {
   try {
     const { title, message, target, targetAudience, sendEmail } = req.body;
@@ -347,18 +322,16 @@ const broadcastNotification = async (req, res) => {
     };
 
     const updateResult = await User.updateMany(filter, {
-      $push: { notifications: { $each: [newNotification], $position: 0 } },
+      $push: { notifications: { $each: [newNotification],$position: 0 } },
     });
 
-    // Idan an zabi a tura da email ga kowa a rukunin
     if (sendEmail) {
       const recipients = await User.find(filter).select("email").lean();
       const emailList = recipients.map((r) => r.email).filter(Boolean);
 
-      // Aika email a bango ba tare da tsayar da request ba
       if (emailList.length > 0) {
         dispatchEmail(
-          emailList.slice(0, 50).join(","), // Fara tura rukunin farko
+          emailList.slice(0, 50).join(","),
           `${APP_NAME} Broadcast: ${title}`,
           message,
           `<div style="font-family:sans-serif;padding:25px;border-left:5px solid #0B5E3C">
@@ -390,7 +363,7 @@ const broadcastNotification = async (req, res) => {
 };
 
 // ==========================================
-// 5. SUPERVISORS & FIELD DIRECTORS WORKFLOW
+// 5. SUPERVISOR WORKFLOW (GYARTACCE - BABU DOUBLE HASH)
 // ==========================================
 const createSupervisor = async (req, res) => {
   try {
@@ -412,16 +385,14 @@ const createSupervisor = async (req, res) => {
       });
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
+    // A tura kalmar sirrin a matsayin plain-text; User.js pre-save hook ne zai yi bcrypt.hash da kansa!
     const supervisor = await User.create({
       name: name || `${firstName || ""} ${surname || ""}`.trim() || "Bellaj Supervisor",
       firstName: firstName || "Supervisor",
       surname: surname || "Bellaj",
       email: cleanEmail,
       phone: String(phone).trim(),
-      password: hashedPassword,
+      password: String(password).trim(),
       role: "supervisor",
       isSuspended: false,
       status: "active",
@@ -598,17 +569,19 @@ const getDashboardStats = async (req, res) => {
       NIMCRequest ? NIMCRequest.countDocuments() : 0,
       BVNRequest ? BVNRequest.countDocuments() : 0,
       SupportRequest ? SupportRequest.countDocuments() : 0,
-      Transaction.countDocuments(),
-      Transaction.aggregate([
-        { $match: { status: "success" } },
-        {
-          $group: {
-            _id: null,
-            totalRevenue: { $sum: "$amount" },
-            successfulTransactions: { $sum: 1 },
-          },
-        },
-      ]),
+      Transaction ? Transaction.countDocuments() : 0,
+      Transaction
+        ? Transaction.aggregate([
+            { $match: { status: "success" } },
+            {
+              $group: {
+                _id: null,
+                totalRevenue: { $sum: "$amount" },
+                successfulTransactions: { $sum: 1 },
+              },
+            },
+          ])
+        : [{ totalRevenue: 0, successfulTransactions: 0 }],
     ]);
 
     return res.status(200).json({
@@ -633,6 +606,10 @@ const getDashboardStats = async (req, res) => {
 
 const getSalesStats = async (req, res) => {
   try {
+    if (!Transaction) {
+      return res.status(200).json({ success: true, totalSales: 0, total: 0, count: 0 });
+    }
+
     const [revenueData, totalSalesCount] = await Promise.all([
       Transaction.aggregate([
         { $match: { status: "success" } },
@@ -710,21 +687,24 @@ const processDirectRefund = async (req, res) => {
 
     await user.save();
 
-    const ledgerTx = await Transaction.create({
-      user: user._id,
-      type: "WALLET_REFUND",
-      service: "ADMIN_REVERSAL",
-      amount: refundAmount,
-      status: "success",
-      reference: generatedRef,
-      narration: reason || "Administrative Direct Refund",
-      details: {
-        originalTransactionId: transactionId || null,
-        previousBalance: prevBalance,
-        newBalance: user.walletBalance,
-        refundedBy: req.user?._id || "ADMIN",
-      },
-    }).catch(() => null);
+    let ledgerTx = null;
+    if (Transaction) {
+      ledgerTx = await Transaction.create({
+        user: user._id,
+        type: "WALLET_REFUND",
+        service: "ADMIN_REVERSAL",
+        amount: refundAmount,
+        status: "success",
+        reference: generatedRef,
+        narration: reason || "Administrative Direct Refund",
+        details: {
+          originalTransactionId: transactionId || null,
+          previousBalance: prevBalance,
+          newBalance: user.walletBalance,
+          refundedBy: req.user?._id || "ADMIN",
+        },
+      }).catch(() => null);
+    }
 
     await Activity.create({
       staffId: req.user?._id,
@@ -755,6 +735,10 @@ const processDirectRefund = async (req, res) => {
 
 const approveRefund = async (req, res) => {
   try {
+    if (!Transaction) {
+      return res.status(500).json({ success: false, message: "Transaction service offline" });
+    }
+
     const transaction = await Transaction.findById(req.params.id);
 
     if (!transaction || transaction.status !== "pending-refund") {
@@ -818,6 +802,10 @@ const approveRefund = async (req, res) => {
 
 const getAllTransactions = async (req, res) => {
   try {
+    if (!Transaction) {
+      return res.status(200).json({ success: true, count: 0, total: 0, data: [] });
+    }
+
     const page = Number(req.query.page) || 1;
     const limit = Math.min(Number(req.query.limit) || 200, 1000);
     const skip = (page - 1) * limit;
@@ -1164,19 +1152,21 @@ const trackTransaction = async (req, res) => {
   try {
     const { transactionId } = req.params;
 
-    let transaction = await Transaction.findOne({
-      $or: [
-        { reference: transactionId },
-        { _id: mongoose.Types.ObjectId.isValid(transactionId) ? transactionId : null },
-      ],
-    }).populate("user", "name firstName surname phone email");
+    if (Transaction) {
+      const transaction = await Transaction.findOne({
+        $or: [
+          { reference: transactionId },
+          { _id: mongoose.Types.ObjectId.isValid(transactionId) ? transactionId : null },
+        ],
+      }).populate("user", "name firstName surname phone email");
 
-    if (transaction) {
-      return res.status(200).json({
-        success: true,
-        userData: transaction.user,
-        transaction,
-      });
+      if (transaction) {
+        return res.status(200).json({
+          success: true,
+          userData: transaction.user,
+          transaction,
+        });
+      }
     }
 
     const userWithTx = await User.findOne({
@@ -1315,6 +1305,10 @@ const getSupportActivities = async (req, res) => {
 
 const getPendingRefunds = async (req, res) => {
   try {
+    if (!Transaction) {
+      return res.status(200).json({ success: true, count: 0, data: [] });
+    }
+
     const transactions = await Transaction.find({ status: "pending-refund" })
       .populate("user", "surname firstName phone email")
       .sort({ createdAt: -1 });
@@ -1326,34 +1320,21 @@ const getPendingRefunds = async (req, res) => {
 };
 
 module.exports = {
-  // System Health & Audit
   getSystemHealth,
-
-  // Pricing & Margins
   updatePricing,
   getAllPricing,
-
-  // Targets & Operational Quotas
   assignTarget,
-
-  // Notifications & Communication
   broadcastNotification,
-
-  // Supervisor & Agent Directorate
   createSupervisor,
   toggleSupervisorStatus,
   transferAgent,
   getSupervisors,
   getAgents,
-
-  // Customer Service Support
   resolveSupportTicket,
   requestAdminFix,
   getSupportRequests,
   handleSupportRequest,
   getSupportActivities,
-
-  // Financial Audits & Refunds
   getDashboardStats,
   getSalesStats,
   getAllTransactions,
@@ -1363,16 +1344,12 @@ module.exports = {
   debitUser,
   toggleWalletStatus,
   trackTransaction,
-
-  // Identity Verification Services
   getAllNIMCRequests,
   updateToProcessing,
   approveRequest,
   getAllBVNRequests,
   updateBVNStatus,
   approveBVNRequest,
-
-  // User Management
   getAllUsers,
   updateUserRole,
   suspendUser,
