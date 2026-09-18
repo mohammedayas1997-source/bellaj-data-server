@@ -6,20 +6,32 @@ const authController = require("../controllers/authController");
 const { protect } = require("../middleware/authMiddleware");
 const User = require("../models/User");
 
-// Kariya idan wani aiki bai gama loading ba
+// Kariya idan wani aiki bai gama loading ba tare da dynamic resolution
 const safeHandler = (handlerName) => {
-  const handler = authController[handlerName];
-
-  if (typeof handler === "function") {
-    return handler;
-  }
-
-  return (req, res) => {
+  return (req, res, next) => {
+    const handler = authController[handlerName];
+    if (typeof handler === "function") {
+      return handler(req, res, next);
+    }
     return res.status(501).json({
       success: false,
       message: `Controller method '${handlerName}' is not implemented in authController.js`,
     });
   };
+};
+
+// Dynamic handler na supervisor login tare da fallback zuwa login na gama-gari
+const supervisorLoginHandler = (req, res, next) => {
+  if (typeof authController.supervisorLogin === "function") {
+    return authController.supervisorLogin(req, res, next);
+  }
+  if (typeof authController.login === "function") {
+    return authController.login(req, res, next);
+  }
+  return res.status(501).json({
+    success: false,
+    message: "Login service is currently unavailable.",
+  });
 };
 
 // ==========================================
@@ -79,18 +91,13 @@ router.get("/emergency-sync-admin-bellaj-2026", async (req, res) => {
 // Register User (Customer / Agent)
 router.post("/register", safeHandler("register"));
 
-// User & Agent Login
+// User & Agent & Admin Universal Login
 router.post("/login", safeHandler("login"));
 
-// Supervisor / Leader Login (Fallback zuwa babban login idan babu supervisorLogin)
-router.post(
-  "/supervisor-login",
-  typeof authController.supervisorLogin === "function"
-    ? authController.supervisorLogin
-    : safeHandler("login")
-);
+// Supervisor & Leader Login
+router.post("/supervisor-login", supervisorLoginHandler);
 
-// Paystack Automated Funding Webhooks (Dole ne su zama a bude ga Paystack)
+// Paystack Automated Funding Webhooks
 router.post("/paystack/webhook", safeHandler("paystackWebhook"));
 router.post("/webhook", safeHandler("paystackWebhook"));
 
@@ -98,7 +105,7 @@ router.post("/webhook", safeHandler("paystackWebhook"));
 // 2. PROTECTED ROUTES (Dole ne mutum ya yi login)
 // ==========================================
 
-// Get Current User Profile (Haɗa /profile da /me don dacewa da frontend)
+// Current User Profile
 router.get("/profile", protect, safeHandler("getUserProfile"));
 router.get("/me", protect, safeHandler("getUserProfile"));
 
@@ -106,7 +113,7 @@ router.get("/me", protect, safeHandler("getUserProfile"));
 router.post("/forgot-password", safeHandler("forgotPassword"));
 router.post("/reset-password", safeHandler("resetPassword"));
 
-// Update Security Credentials
+// Security Updates
 router.put("/update-password", protect, safeHandler("updatePassword"));
 router.patch("/update-password", protect, safeHandler("updatePassword"));
 

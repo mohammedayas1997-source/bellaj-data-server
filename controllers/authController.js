@@ -46,7 +46,7 @@ const sendWelcomeEmail = async (user) => {
             <h1 style="color: #ffffff; margin: 0; font-size: 24px;">BELLAJ DATA HUB</h1>
           </div>
           <div style="padding: 30px; background-color: #ffffff;">
-            <h2 style="color: #121212;">Welcome, ${user.firstName}!</h2>
+            <h2 style="color: #121212;">Welcome, ${user.firstName || user.name}!</h2>
             <p style="color: #475569; line-height: 1.6;">
               Your account has been created successfully. You can now access affordable data, airtime, and bill payment services.
             </p>
@@ -76,20 +76,22 @@ const sendToken = (user, statusCode, res) => {
   const token = jwt.sign(
     { id: user._id, role: user.role },
     process.env.JWT_SECRET || "fallback_secret",
-    { expiresIn: "30d" },
+    { expiresIn: "30d" }
   );
+
+  const resolvedRole = String(user.role || "user").toLowerCase().trim();
 
   const userPayload = {
     id: user._id,
     _id: user._id,
-    name: user.name,
+    name: user.name || `${user.firstName || ""} ${user.surname || ""}`.trim(),
     firstName: user.firstName,
     surname: user.surname,
     email: user.email,
     phone: user.phone,
-    walletBalance: user.walletBalance || 0,
-    balance: user.walletBalance || 0,
-    role: user.role,
+    walletBalance: user.walletBalance || user.balance || 0,
+    balance: user.walletBalance || user.balance || 0,
+    role: resolvedRole,
     referralId: user.referralId,
     accountNumber: user.accountNumber || "Generating...",
     bankName: user.bankName || "Wema Bank",
@@ -105,9 +107,9 @@ const sendToken = (user, statusCode, res) => {
     success: true,
     message: `${APP_NAME} authentication successful`,
     token,
-    role: user.role,
+    role: resolvedRole,
     user: userPayload,
-    data: { user: userPayload },
+    data: { user: userPayload, token, role: resolvedRole },
   });
 };
 
@@ -127,14 +129,15 @@ const createDedicatedAccount = async (user) => {
     "https://api.paystack.co/customer",
     {
       email: user.email,
-      first_name: user.firstName,
-      last_name: user.surname,
+      first_name: user.firstName || "Customer",
+      last_name: user.surname || "User",
       phone: user.phone,
     },
-    axiosConfig,
+    axiosConfig
   );
 
-  const customerCode = customerResponse.data.data.customer_code;
+  const customerCode = customerResponse.data?.data?.customer_code;
+  if (!customerCode) return null;
 
   const accountResponse = await axios.post(
     "https://api.paystack.co/dedicated_account",
@@ -142,22 +145,62 @@ const createDedicatedAccount = async (user) => {
       customer: customerCode,
       preferred_bank: "wema-bank",
     },
-    axiosConfig,
+    axiosConfig
   );
 
-  const bankData = accountResponse.data.data;
+  const bankData = accountResponse.data?.data;
+  if (!bankData) return null;
 
   return await User.findByIdAndUpdate(
     user._id,
     {
       paystackCustomerCode: customerCode,
-      bankName: bankData.bank.name || "Wema Bank",
+      bankName: bankData.bank?.name || "Wema Bank",
       accountNumber: bankData.account_number,
       accountName: bankData.account_name,
     },
-    { new: true },
+    { new: true }
   );
 };
+
+// ==========================================
+// 1. UNIVERSAL AUTHENTICATOR (PASSWORD MATCHER)
+// ==========================================
+const verifyCredentials = async (inputPassword, storedHash, userModelInstance) => {
+  if (!storedHash || !inputPassword) return false;
+
+  const raw = String(inputPassword).trim();
+  const target = String(storedHash).trim();
+
+  // 1. Gwada da bcrypt na asali
+  try {
+    const directMatch = await bcrypt.compare(raw, target);
+    if (directMatch) return true;
+  } catch {}
+
+  // 2. Gwada da instance method idan yana wanzu a User model
+  if (userModelInstance && typeof userModelInstance.matchPassword === "function") {
+    try {
+      const methodMatch = await userModelInstance.matchPassword(raw);
+      if (methodMatch) return true;
+    } catch {}
+  }
+
+  // 3. Fallback: idan kalmar sirrin ta shiga a matsayin plain text ba tare da hash ba
+  if (raw === target) {
+    // Daidaita shi zuwa hash a bango don tsaro
+    const salt = await bcrypt.genSalt(10);
+    userModelInstance.password = await bcrypt.hash(raw, salt);
+    await userModelInstance.save({ validateBeforeSave: false }).catch(() => null);
+    return true;
+  }
+
+  return false;
+};
+
+// ==========================================
+// 2. AUTH CONTROLLERS
+// ==========================================
 
 exports.register = async (req, res) => {
   try {
@@ -208,7 +251,6 @@ exports.register = async (req, res) => {
       referralId = generateReferralId(firstName, surname);
     }
 
-    // Neman supervisor idan agent ya saka referral code
     let assignedSupervisorId = undefined;
     const refCode = (supervisorCode || referralCode || "").trim();
 
@@ -240,9 +282,10 @@ exports.register = async (req, res) => {
       supervisorCode: refCode,
       profileImage: profileImage || businessImage || "",
       walletBalance: 0,
+      status: "active",
+      isSuspended: false,
     });
 
-    // Kirkirar Dedicated Account ba tare da toshe martanin rajista ba
     try {
       const updatedUser = await createDedicatedAccount(user);
       if (updatedUser) {
@@ -252,7 +295,7 @@ exports.register = async (req, res) => {
     } catch (paystackError) {
       console.error(
         "Paystack Account Error:",
-        paystackError.response?.data?.message || paystackError.message,
+        paystackError.response?.data?.message || paystackError.message
       );
     }
 
@@ -263,7 +306,7 @@ exports.register = async (req, res) => {
         accountNumber: "Generating...",
         accountName: `${user.firstName} ${user.surname}`.toUpperCase(),
       },
-      { new: true },
+      { new: true }
     );
 
     sendWelcomeEmail(fallbackUser);
@@ -288,10 +331,12 @@ exports.login = async (req, res) => {
       });
     }
 
-    const normalizedEmail = String(email).toLowerCase().trim();
+    const cleanIdentifier = String(email).toLowerCase().trim();
 
-    // 1. Dauko user tare da password koda akwai select: false
-    const user = await User.findOne({ email: normalizedEmail }).select("+password");
+    // Nemo user ta Email ko kuma Lambar Waya
+    const user = await User.findOne({
+      $or: [{ email: cleanIdentifier }, { phone: cleanIdentifier }],
+    }).select("+password");
 
     if (!user) {
       return res.status(401).json({
@@ -300,15 +345,7 @@ exports.login = async (req, res) => {
       });
     }
 
-    // 2. Kwatanta password kai tsaye ta hanyar bcrypt da kuma fallback na matchPassword
-    let isMatch = false;
-    if (user.password) {
-      isMatch = await bcrypt.compare(String(password), user.password);
-    }
-
-    if (!isMatch && typeof user.matchPassword === "function") {
-      isMatch = await user.matchPassword(String(password));
-    }
+    const isMatch = await verifyCredentials(password, user.password, user);
 
     if (!isMatch) {
       return res.status(401).json({
@@ -317,7 +354,7 @@ exports.login = async (req, res) => {
       });
     }
 
-    if (user.isSuspended) {
+    if (user.isSuspended || user.status === "suspended") {
       return res.status(403).json({
         success: false,
         message: "Your account is suspended. Please contact administrator.",
@@ -334,11 +371,58 @@ exports.login = async (req, res) => {
   }
 };
 
-/**
- * @desc    Tura 6-Digit OTP zuwa Email don Canza Password
- * @route   POST /api/v1/auth/forgot-password
- * @access  Public
- */
+// Keɓantacciyar hanyar shiga ta Supervisor
+exports.supervisorLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter your supervisor credentials.",
+      });
+    }
+
+    const cleanIdentifier = String(email).toLowerCase().trim();
+
+    const user = await User.findOne({
+      $or: [{ email: cleanIdentifier }, { phone: cleanIdentifier }],
+      role: { $in: ["supervisor", "leader", "admin"] },
+    }).select("+password");
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized supervisor account or incorrect credentials.",
+      });
+    }
+
+    const isMatch = await verifyCredentials(password, user.password, user);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid supervisor credentials.",
+      });
+    }
+
+    if (user.isSuspended || user.status === "suspended") {
+      return res.status(403).json({
+        success: false,
+        message: "Supervisor terminal access is suspended. Contact admin.",
+      });
+    }
+
+    return sendToken(user, 200, res);
+  } catch (error) {
+    console.error("Supervisor Login Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Supervisor gateway authentication failed.",
+    });
+  }
+};
+
 exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
@@ -360,15 +444,12 @@ exports.forgotPassword = async (req, res) => {
       });
     }
 
-    // Ƙirƙirar lambar OTP guda 6
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Adana OTP da lokacin ƙarewarsa (minti 15) a cikin bayanan mai amfani
     user.resetPasswordOtp = otp;
-    user.resetPasswordExpires = Date.now() + 15 * 60 * 1000; // 15 mins
+    user.resetPasswordExpires = Date.now() + 15 * 60 * 1000;
     await user.save({ validateBeforeSave: false });
 
-    // Tura Email ta Nodemailer
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       const transporter = nodemailer.createTransport({
         service: "gmail",
@@ -415,11 +496,6 @@ exports.forgotPassword = async (req, res) => {
   }
 };
 
-/**
- * @desc    Tantance OTP tare da sa Sabon Password
- * @route   POST /api/v1/auth/reset-password
- * @access  Public
- */
 exports.resetPassword = async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
@@ -452,11 +528,11 @@ exports.resetPassword = async (req, res) => {
       });
     }
 
-    // Sa sabon password kuma share tsohon OTP
-    user.password = newPassword;
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(String(newPassword).trim(), salt);
     user.resetPasswordOtp = undefined;
     user.resetPasswordExpires = undefined;
-    await user.save();
+    await user.save({ validateBeforeSave: false });
 
     return res.status(200).json({
       success: true,
@@ -471,7 +547,6 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
-// TSARO: Paystack Webhook mai tantancewa (HMAC SHA512)
 exports.paystackWebhook = async (req, res) => {
   try {
     const secret = process.env.PAYSTACK_SECRET_KEY;
@@ -496,7 +571,7 @@ exports.paystackWebhook = async (req, res) => {
       const user = await User.findOneAndUpdate(
         { email: customer.email.toLowerCase() },
         { $inc: { walletBalance: creditValue } },
-        { new: true },
+        { new: true }
       );
 
       if (user && Transaction) {
@@ -524,15 +599,21 @@ exports.updatePassword = async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     const user = await User.findById(req.user.id).select("+password");
 
-    if (!user || !(await user.matchPassword(currentPassword))) {
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    const isMatch = await verifyCredentials(currentPassword, user.password, user);
+    if (!isMatch) {
       return res.status(401).json({
         success: false,
         message: "Current password does not match.",
       });
     }
 
-    user.password = newPassword;
-    await user.save();
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(String(newPassword).trim(), salt);
+    await user.save({ validateBeforeSave: false });
 
     res.status(200).json({
       success: true,
