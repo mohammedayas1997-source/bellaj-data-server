@@ -107,7 +107,7 @@ const getSystemHealth = async (req, res) => {
 
     const [userCount, txCount, activeSupervisors, totalPricingRules] = await Promise.all([
       User.countDocuments().catch(() => 0),
-      Transaction.countDocuments().catch(() => 0),
+      Transaction ? Transaction.countDocuments().catch(() => 0) : 0,
       User.countDocuments({ role: "supervisor", isSuspended: false }).catch(() => 0),
       Pricing.countDocuments().catch(() => 0),
     ]);
@@ -363,7 +363,7 @@ const broadcastNotification = async (req, res) => {
 };
 
 // ==========================================
-// 5. SUPERVISOR WORKFLOW (GYARTACCE - BABU DOUBLE HASH)
+// 5. SUPERVISOR WORKFLOW (BABU DOUBLE HASH)
 // ==========================================
 const createSupervisor = async (req, res) => {
   try {
@@ -962,7 +962,7 @@ const approveBVNRequest = async (req, res) => {
 };
 
 // ==========================================
-// 9. GENERAL USER & IDENTITY ROLES
+// 9. GENERAL USER & AUTHORITY CONTROLS (DELETE & SUSPEND)
 // ==========================================
 const getAllUsers = async (req, res) => {
   try {
@@ -1034,6 +1034,10 @@ const updateUserRole = async (req, res) => {
   }
 };
 
+/**
+ * @desc    Dakatar da kowane irin user (Agent, Supervisor, ko Normal User)
+ * @route   PATCH /api/v1/admin/users/:id/status ko /api/v1/admin/suspend-user/:id
+ */
 const suspendUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -1041,16 +1045,96 @@ const suspendUser = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    user.isSuspended = !user.isSuspended;
-    user.status = user.isSuspended ? "suspended" : "active";
+    // Kar a bar wani ya dakatar da kansa idan superadmin ne
+    if (req.user?._id && String(req.user._id) === String(user._id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Security Protocol: You cannot suspend your own active admin account.",
+      });
+    }
+
+    const newSuspendedState =
+      req.body.isSuspended !== undefined
+        ? Boolean(req.body.isSuspended)
+        : !user.isSuspended;
+
+    user.isSuspended = newSuspendedState;
+    user.status = newSuspendedState ? "suspended" : "active";
     await user.save();
+
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_USER_STATUS_TOGGLED",
+      details: `${user.role ? user.role.toUpperCase() : "USER"} ${user.email} status set to ${
+        newSuspendedState ? "SUSPENDED" : "ACTIVE"
+      }`,
+      targetUser: user._id,
+    }).catch(() => null);
 
     return res.status(200).json({
       success: true,
-      message: `User status updated to ${user.status}`,
+      message: `Account status updated to ${user.status.toUpperCase()}`,
       data: user,
     });
   } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    GOGE USER HAR ABADA DAGA DATABASE (PERMANENT DELETE)
+ * @route   DELETE /api/v1/admin/users/:id
+ */
+const deleteUserPermanently = async (req, res) => {
+  try {
+    const targetUserId = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ success: false, message: "Invalid user identifier" });
+    }
+
+    const user = await User.findById(targetUserId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User does not exist in database" });
+    }
+
+    // Kariya: Kar a bar Admin ya goge kansa
+    if (req.user?._id && String(req.user._id) === String(user._id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Safety Refusal: You cannot delete your own executive account.",
+      });
+    }
+
+    const deletedRole = user.role || "user";
+    const deletedEmail = user.email;
+    const deletedName = user.name || `${user.firstName || ""} ${user.surname || ""}`.trim();
+
+    // 1. Idan supervisor ne aka goge, cire shi daga karkashin dukkan agents dinsa
+    if (deletedRole === "supervisor") {
+      await User.updateMany(
+        { assignedSupervisor: user._id },
+        { $unset: { assignedSupervisor: "" }, $set: { supervisorId: null } }
+      );
+    }
+
+    // 2. Goge mai amfanin kai tsaye daga collection na users
+    await User.findByIdAndDelete(targetUserId);
+
+    // 3. Ajiye audit log na gogewar
+    await Activity.create({
+      staffId: req.user?._id,
+      action: "BELLAJ_USER_PERMANENTLY_DELETED",
+      details: `Permanently deleted ${deletedRole.toUpperCase()}: ${deletedName} (${deletedEmail}) from system database.`,
+    }).catch(() => null);
+
+    return res.status(200).json({
+      success: true,
+      message: `Account ${deletedEmail} has been permanently deleted from database.`,
+      deletedUserId: targetUserId,
+    });
+  } catch (error) {
+    console.error("Permanent Delete User Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -1352,5 +1436,7 @@ module.exports = {
   approveBVNRequest,
   getAllUsers,
   updateUserRole,
+  // Ayyukan da aka daidaita don AdminControl:
   suspendUser,
+  deleteUserPermanently,
 };

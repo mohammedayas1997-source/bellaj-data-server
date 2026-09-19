@@ -58,8 +58,8 @@ router.post("/create-supervisor", safeHandler("createSupervisor"));
 router.post("/users/create", safeHandler("createSupervisor"));
 
 // Dakatar / Kunna Supervisor (Status Toggle)
-router.patch("/users/:id/status", safeHandler("toggleSupervisorStatus"));
-router.put("/users/:id", safeHandler("toggleSupervisorStatus"));
+router.patch("/supervisors/:id/status", safeHandler("toggleSupervisorStatus"));
+router.put("/supervisors/:id/status", safeHandler("toggleSupervisorStatus"));
 
 // Transfer Agent zuwa wani Supervisor
 router.put("/transfer-agent", safeHandler("transferAgent"));
@@ -71,23 +71,32 @@ router.put("/pricing", safeHandler("updatePricing"));
 router.post("/pricing", safeHandler("updatePricing"));
 router.post("/pricing/update", safeHandler("updatePricing"));
 
-// ==========================================
-// 4. USER DIRECTORY & TARGETS
-// ==========================================
+// ========================================================
+// 4. USER DIRECTORY, SECURITY, SUSPEND & PERMANENT DELETE
+// ========================================================
 router.get("/users", safeHandler("getAllUsers"));
 router.get("/supervisors", safeHandler("getSupervisors"));
 router.get("/agents", safeHandler("getAgents"));
 
+// Dakatar da kowane irin user (Supervisor, Agent, User)
+router.patch("/users/:id/status", safeHandler("suspendUser"));
+router.put("/users/:id/status", safeHandler("suspendUser"));
+router.patch("/suspend-user/:id", safeHandler("suspendUser"));
+
+// GOGE USER HAR ABADA (Permanent Deletion)
+router.delete("/users/:id", safeHandler("deleteUserPermanently"));
+router.delete("/users/delete/:id", safeHandler("deleteUserPermanently"));
+
+router.patch("/update-role", safeHandler("updateUserRole"));
+
+// Targets & Quotas
 router.post("/targets", safeHandler("assignTarget"));
 router.post("/assign-target", safeHandler("assignTarget"));
 router.put("/assign-target", safeHandler("assignTarget"));
 
-router.patch("/suspend-user/:id", safeHandler("suspendUser"));
-router.patch("/update-role", safeHandler("updateUserRole"));
-
-// ==========================================
+// ========================================================
 // 5. WALLET MANAGEMENT & DIRECT REFUNDS
-// ==========================================
+// ========================================================
 router.patch("/toggle-wallet-status", safeHandler("toggleWalletStatus"));
 router.post("/debit-user", safeHandler("debitUser"));
 router.post("/wallet/refund", safeHandler("processDirectRefund"));
@@ -96,9 +105,9 @@ router.get("/pending-refunds", safeHandler("getPendingRefunds"));
 router.post("/approve-refund/:id", safeHandler("approveRefund"));
 router.patch("/refunds/:id/approve", safeHandler("approveRefund"));
 
-// ==========================================
+// ========================================================
 // 6. ACTIVITY LOGS & CUSTOMER SERVICE TICKETS
-// ==========================================
+// ========================================================
 router.get("/activities", safeHandler("getSupportActivities"));
 router.get("/reports", safeHandler("getSupportRequests"));
 router.get("/all-reports", safeHandler("getSupportRequests"));
@@ -108,23 +117,23 @@ router.put("/reports/:id", safeHandler("resolveSupportTicket"));
 router.post("/request-admin-fix", safeHandler("requestAdminFix"));
 router.patch("/handle-report", safeHandler("handleSupportRequest"));
 
-// ==========================================
+// ========================================================
 // 7. NIMC REQUESTS
-// ==========================================
+// ========================================================
 router.get("/nimc-requests", safeHandler("getAllNIMCRequests"));
 router.patch("/nimc-processing/:id", safeHandler("updateToProcessing"));
 router.patch("/approve-nimc/:id", safeHandler("approveRequest"));
 
-// ==========================================
+// ========================================================
 // 8. BVN REQUESTS
-// ==========================================
+// ========================================================
 router.get("/bvn-requests", safeHandler("getAllBVNRequests"));
 router.patch("/bvn-processing/:id", safeHandler("updateBVNStatus"));
 router.patch("/approve-bvn/:id", safeHandler("approveBVNRequest"));
 
-// ==========================================
+// ========================================================
 // 9. DATA PLANS CONFIGURATION
-// ==========================================
+// ========================================================
 router.get("/data-plans", safeHandler("getPlans", dataPlanController));
 router.post("/set-plan", safeHandler("setPlanPrice", dataPlanController));
 
