@@ -97,6 +97,10 @@ router.post("/login", safeHandler("login"));
 // Supervisor & Leader Login
 router.post("/supervisor-login", supervisorLoginHandler);
 
+// Password Recovery Flow
+router.post("/forgot-password", safeHandler("forgotPassword"));
+router.post("/reset-password", safeHandler("resetPassword"));
+
 // Paystack Automated Funding Webhooks
 router.post("/paystack/webhook", safeHandler("paystackWebhook"));
 router.post("/webhook", safeHandler("paystackWebhook"));
@@ -109,15 +113,29 @@ router.post("/webhook", safeHandler("paystackWebhook"));
 router.get("/profile", protect, safeHandler("getUserProfile"));
 router.get("/me", protect, safeHandler("getUserProfile"));
 
-// Password Recovery Flow
-router.post("/forgot-password", safeHandler("forgotPassword"));
-router.post("/reset-password", safeHandler("resetPassword"));
-
-// Security Updates
+// Password Updates
 router.put("/update-password", protect, safeHandler("updatePassword"));
 router.patch("/update-password", protect, safeHandler("updatePassword"));
 
+// ==========================================
+// 3. TRANSACTION PIN LIFECYCLE (LIVE WORKFLOW)
+// ==========================================
+
+// Duba matsayin PIN ga LoginScreen / UpdatePin
+router.get("/pin-status", protect, safeHandler("getPinStatus"));
+
+// Saita sabon PIN na farko a SetupPinScreen
+router.post("/set-pin", protect, safeHandler("setPin"));
+router.put("/set-pin", protect, safeHandler("setPin"));
+
+// Canza tsohon PIN a UpdatePinScreen
+router.post("/change-pin", protect, safeHandler("changePin"));
+router.put("/change-pin", protect, safeHandler("changePin"));
+router.patch("/change-pin", protect, safeHandler("changePin"));
+
+// Aliases don dacewa da sauran kiran da wayar ke yi
 router.put("/update-pin", protect, safeHandler("updatePin"));
 router.patch("/update-pin", protect, safeHandler("updatePin"));
+router.post("/update-pin", protect, safeHandler("updatePin"));
 
 module.exports = router;
