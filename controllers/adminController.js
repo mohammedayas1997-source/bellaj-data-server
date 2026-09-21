@@ -10,6 +10,12 @@ try {
 } catch (e) {
   DataPlan = null;
 }
+let Sale;
+try {
+  Sale = require("../models/Sale");
+} catch (e) {
+  Sale = null;
+}
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
@@ -26,10 +32,12 @@ try {
   const pricingSchema = new mongoose.Schema(
     {
       service: { type: String, required: true, unique: true, uppercase: true },
+      serviceName: { type: String, default: "VAS Service" },
       provider: { type: String, default: "SYSTEM_DEFAULT" },
       baseRate: { type: Number, required: true, default: 0 },
       margin: { type: Number, required: true, default: 0 },
       agentMargin: { type: Number, default: 0 },
+      agentPrice: { type: Number, default: 0 },
       retailPrice: { type: Number, required: true, default: 0 },
       status: { type: String, enum: ["ACTIVE", "DISABLED"], default: "ACTIVE" },
       updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -63,7 +71,7 @@ const dispatchEmail = async (to, subject, text, html) => {
   }
 };
 
-// Helper: Tura Notification ga User Guda Daya
+// Helper: Tura Notification ga User
 const sendNotification = async (userId, title, message, sendAlsoEmail = false) => {
   try {
     const user = await User.findById(userId);
@@ -118,7 +126,7 @@ const getSystemHealth = async (req, res) => {
       Pricing.countDocuments().catch(() => 0),
     ]);
 
-    const isSystemSound = dbStatus === "CONNECTED" && envAudit.JWT_SECRET && envAudit.PAYSTACK_SECRET;
+    const isSystemSound = dbStatus === "CONNECTED" && envAudit.JWT_SECRET;
 
     return res.status(200).json({
       success: true,
@@ -142,27 +150,41 @@ const getSystemHealth = async (req, res) => {
 };
 
 // ==========================================
-// 2. PRICING CONTROLS & SET-PLAN (TARIFF)
+// 2. PRICING CONTROLS (NIMC, BVN, CABLES, DATA)
 // ==========================================
 const updatePricing = async (req, res) => {
   try {
-    const { service, serviceType, rate, baseRate, margin, agentMargin, status, provider } = req.body;
-    const channel = String(service || serviceType || "SME_DATA").toUpperCase().trim();
+    const {
+      service,
+      serviceType,
+      serviceName,
+      rate,
+      baseRate,
+      margin,
+      agentMargin,
+      retailPrice,
+      agentPrice,
+      status,
+      provider,
+    } = req.body;
 
-    const unitBase = Number(rate !== undefined ? rate : baseRate || 0);
-    const profitMargin = Number(margin || 0);
-    const subAgentMargin = Number(agentMargin || 0);
-    const totalRetail = unitBase + profitMargin;
+    const channel = String(service || serviceType || "SME_DATA").toUpperCase().trim();
+    const unitBase = Number(baseRate !== undefined ? baseRate : rate || 0);
+    const unitRetail = Number(retailPrice !== undefined ? retailPrice : unitBase + Number(margin || 0));
+    const unitAgent = Number(agentPrice !== undefined ? agentPrice : unitRetail - Number(agentMargin || 0));
+    const calculatedMargin = unitRetail - unitBase;
 
     const pricingEntry = await Pricing.findOneAndUpdate(
       { service: channel },
       {
         $set: {
           service: channel,
+          serviceName: serviceName || channel.replace(/_/g, " "),
           baseRate: unitBase,
-          margin: profitMargin,
-          agentMargin: subAgentMargin,
-          retailPrice: totalRetail,
+          margin: calculatedMargin,
+          agentMargin: Number(agentMargin || 0),
+          agentPrice: unitAgent,
+          retailPrice: unitRetail,
           status: status || "ACTIVE",
           provider: provider || "SYSTEM_DEFAULT",
           updatedBy: req.user?._id,
@@ -174,7 +196,7 @@ const updatePricing = async (req, res) => {
     await Activity.create({
       staffId: req.user?._id,
       action: "BELLAJ_PRICING_UPDATED",
-      details: `Set live pricing for ${channel}: Cost=₦${unitBase}, Margin=₦${profitMargin} => Retail=₦${totalRetail}`,
+      details: `Set pricing for ${channel}: Cost=₦${unitBase}, Retail=₦${unitRetail}, Agent=₦${unitAgent}`,
     }).catch(() => null);
 
     return res.status(200).json({
@@ -189,11 +211,12 @@ const updatePricing = async (req, res) => {
 
 const getAllPricing = async (req, res) => {
   try {
-    const list = await Pricing.find().sort({ service: 1 });
+    const list = await Pricing.find().sort({ service: 1 }).lean();
     return res.status(200).json({
       success: true,
       count: list.length,
       data: list,
+      pricing: list,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -243,7 +266,7 @@ const setPlanPrice = async (req, res) => {
     }
 
     const finalCustomer = Number(customerPrice !== undefined ? customerPrice : userPrice || 0);
-    const finalAgent = Number(agentPrice !== undefined ? agentPrice : retailPrice || 0);
+    const finalAgent = Number(agentPrice !== undefined ? agentPrice : retailPrice || finalCustomer);
 
     const rawVolume = String(volume || (sizeGB ? `${sizeGB} GB` : "1.0 GB")).trim();
     let numericSize = Number(sizeGB || 0);
@@ -431,7 +454,7 @@ const broadcastNotification = async (req, res) => {
     let filter = {};
     if (scope === "AGENTS") filter = { role: "agent" };
     else if (scope === "SUPERVISORS") filter = { role: "supervisor" };
-    else if (scope === "SUBSCRIBERS" || scope === "USERS") filter = { role: "user" };
+    else if (scope === "SUBSCRIBERS" || scope === "USERS" || scope === "CUSTOMERS") filter = { role: { $in: ["user", "customer"] } };
 
     const newNotification = {
       title: title.trim(),
@@ -441,7 +464,7 @@ const broadcastNotification = async (req, res) => {
     };
 
     const updateResult = await User.updateMany(filter, {
-      $push: { notifications: { $each: [newNotification],$position: 0 } },
+      $push: { notifications: { $each: [newNotification], $position: 0 } },
     });
 
     if (sendEmail) {
@@ -482,7 +505,7 @@ const broadcastNotification = async (req, res) => {
 };
 
 // ==========================================
-// 5. CIKEKEN REGISTRATION NA SUPERVISOR, AGENT, CUSTOMER & STAFF
+// 5. REGISTRATION NA DUKKAN ROLES & USERS
 // ==========================================
 const createSupervisor = async (req, res) => {
   try {
@@ -521,7 +544,6 @@ const createSupervisor = async (req, res) => {
       });
     }
 
-    // Tace cikakken suna
     const rawFullName = (fullName || name || "").trim();
     let fName = firstName ? firstName.trim() : "";
     let sName = surname ? surname.trim() : "";
@@ -532,12 +554,10 @@ const createSupervisor = async (req, res) => {
       sName = parts.slice(1).join(" ") || "Bellaj";
     }
 
-    // Tace Role (Customer, Agent, Supervisor, Support, Staff)
     let assignedRole = String(role || "supervisor").toLowerCase().trim();
     if (assignedRole === "customer") assignedRole = "user";
     if (assignedRole === "staff") assignedRole = "admin";
 
-    // Ƙirƙirar account da plain-text password don UserSchema pre-save hook ya yi hashing sau ɗaya
     const newUser = await User.create({
       name: rawFullName || `${fName} ${sName}`.trim(),
       firstName: fName || "User",
@@ -707,7 +727,7 @@ const resolveSupportTicket = async (req, res) => {
 };
 
 // ==========================================
-// 7. FINANCIAL, STATS & ANALYTICS
+// 7. FINANCIAL, STATS & ANALYTICS (INFLOW / OUTFLOW / REFUNDS)
 // ==========================================
 const getDashboardStats = async (req, res) => {
   try {
@@ -719,28 +739,33 @@ const getDashboardStats = async (req, res) => {
       bvnCount,
       supportCount,
       txCount,
-      revenueResult,
+      allTxList,
     ] = await Promise.all([
-      User.countDocuments(),
+      User.countDocuments({ role: { $in: ["user", "customer"] } }),
       User.countDocuments({ role: "agent" }),
       User.countDocuments({ role: "supervisor" }),
       NIMCRequest ? NIMCRequest.countDocuments() : 0,
       BVNRequest ? BVNRequest.countDocuments() : 0,
       SupportRequest ? SupportRequest.countDocuments() : 0,
       Transaction ? Transaction.countDocuments() : 0,
-      Transaction
-        ? Transaction.aggregate([
-            { $match: { status: "success" } },
-            {
-              $group: {
-                _id: null,
-                totalRevenue: { $sum: "$amount" },
-                successfulTransactions: { $sum: 1 },
-              },
-            },
-          ])
-        : [{ totalRevenue: 0, successfulTransactions: 0 }],
+      Transaction ? Transaction.find({ status: "success" }).select("amount type category").lean() : [],
     ]);
+
+    let totalInflow = 0;
+    let totalOutflow = 0;
+    let totalRefunds = 0;
+
+    allTxList.forEach((tx) => {
+      const amt = Number(tx.amount || 0);
+      const t = String(tx.type || tx.category || "").toLowerCase();
+      if (t.includes("fund") || t.includes("deposit") || t.includes("credit") || t.includes("paystack")) {
+        totalInflow += amt;
+      } else if (t.includes("refund")) {
+        totalRefunds += amt;
+      } else {
+        totalOutflow += amt;
+      }
+    });
 
     return res.status(200).json({
       success: true,
@@ -753,8 +778,11 @@ const getDashboardStats = async (req, res) => {
       reports: supportCount,
       transactions: txCount,
       finance: {
-        totalRevenue: revenueResult[0]?.totalRevenue || 0,
-        successfulTransactions: revenueResult[0]?.successfulTransactions || 0,
+        totalRevenue: totalInflow,
+        totalInflow,
+        totalOutflow,
+        totalRefunds,
+        successfulTransactions: allTxList.length,
       },
     });
   } catch (error) {
@@ -768,32 +796,35 @@ const getSalesStats = async (req, res) => {
       return res.status(200).json({ success: true, totalSales: 0, total: 0, count: 0 });
     }
 
-    const [revenueData, totalSalesCount] = await Promise.all([
-      Transaction.aggregate([
-        { $match: { status: "success" } },
-        {
-          $group: {
-            _id: null,
-            totalSales: { $sum: "$amount" },
-          },
-        },
-      ]),
-      Transaction.countDocuments({ status: "success" }),
-    ]);
+    const txSuccess = await Transaction.find({ status: "success" }).select("amount type").lean();
+    let totalInflow = 0;
+    let totalOutflow = 0;
 
-    const totalRevenue = revenueData[0]?.totalSales || 0;
+    txSuccess.forEach((tx) => {
+      const amt = Number(tx.amount || 0);
+      const t = String(tx.type || "").toLowerCase();
+      if (t.includes("fund") || t.includes("deposit") || t.includes("credit")) {
+        totalInflow += amt;
+      } else {
+        totalOutflow += amt;
+      }
+    });
 
     return res.status(200).json({
       success: true,
-      totalSales: totalRevenue,
-      total: totalRevenue,
-      count: totalSalesCount,
+      totalSales: totalOutflow,
+      totalRevenue: totalInflow,
+      total: totalOutflow,
+      count: txSuccess.length,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
+// ==========================================
+// 8. DIRECT WALLET REFUNDS
+// ==========================================
 const processDirectRefund = async (req, res) => {
   try {
     const { userId, email, amount, reason, transactionId, reference } = req.body;
@@ -970,7 +1001,7 @@ const getAllTransactions = async (req, res) => {
 
     const [transactions, total] = await Promise.all([
       Transaction.find()
-        .populate("user", "surname firstName email phone role")
+        .populate("user", "surname firstName name email phone role")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit),
@@ -982,6 +1013,7 @@ const getAllTransactions = async (req, res) => {
       count: transactions.length,
       total,
       data: transactions,
+      transactions,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
@@ -989,7 +1021,7 @@ const getAllTransactions = async (req, res) => {
 };
 
 // ==========================================
-// 8. IDENTITY SERVICES: NIMC & BVN
+// 9. IDENTITY SERVICES: NIMC & BVN
 // ==========================================
 const getAllNIMCRequests = async (req, res) => {
   try {
@@ -1120,12 +1152,35 @@ const approveBVNRequest = async (req, res) => {
 };
 
 // ==========================================
-// 9. GENERAL USER & AUTHORITY CONTROLS (DELETE & SUSPEND)
+// 10. USER, AGENT & SUPERVISOR AUDITING DIRECTORY
 // ==========================================
 const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find().select("-password").sort({ createdAt: -1 });
-    return res.status(200).json({ success: true, count: users.length, data: users, users });
+    const users = await User.find().select("-password").sort({ createdAt: -1 }).lean();
+
+    // Hada kowanne mai amfani da kudaden da ya kashe wajen sayayya
+    const userIds = users.map((u) => u._id);
+    let spentMap = new Map();
+
+    if (Transaction) {
+      const spentAgg = await Transaction.aggregate([
+        { $match: { user: {$in: userIds }, status: "success" } },
+        { $group: { _id: "$user", totalSpent: { $sum: "$amount" } } },
+      ]);
+      spentAgg.forEach((s) => spentMap.set(String(s._id), s.totalSpent));
+    }
+
+    const formattedUsers = users.map((u) => ({
+      ...u,
+      totalSpent: spentMap.get(String(u._id)) || 0,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: formattedUsers.length,
+      data: formattedUsers,
+      users: formattedUsers,
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -1135,8 +1190,50 @@ const getSupervisors = async (req, res) => {
   try {
     const supervisors = await User.find({ role: "supervisor" })
       .select("-password")
-      .sort({ createdAt: -1 });
-    return res.status(200).json({ success: true, count: supervisors.length, data: supervisors });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Hada kowane supervisor da bayanan agents da tallace-tallacen kungiyarsa
+    const supervisorsWithMetrics = await Promise.all(
+      supervisors.map(async (sup) => {
+        const agents = await User.find({
+          $or: [{ assignedSupervisor: sup._id }, { supervisorId: sup._id }],
+          role: "agent",
+        })
+          .select("name email phone walletBalance dataVolumeSold")
+          .lean();
+
+        let teamGB = 0;
+        let teamRevenue = 0;
+
+        if (Sale) {
+          const salesAgg = await Sale.aggregate([
+            { $match: { supervisorId: sup._id } },
+            { $group: { _id: null, totalGB: { $sum: "$dataAmountGB" }, totalAmount: { $sum: "$amount" } } },
+          ]);
+          if (salesAgg.length > 0) {
+            teamGB = salesAgg[0].totalGB || 0;
+            teamRevenue = salesAgg[0].totalAmount || 0;
+          }
+        }
+
+        return {
+          ...sup,
+          teamSize: agents.length,
+          agents,
+          teamPerformance: teamGB,
+          dataVolumeSold: teamGB,
+          teamRevenue,
+        };
+      })
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: supervisorsWithMetrics.length,
+      data: supervisorsWithMetrics,
+      supervisors: supervisorsWithMetrics,
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -1146,8 +1243,32 @@ const getAgents = async (req, res) => {
   try {
     const agents = await User.find({ role: "agent" })
       .select("-password")
-      .sort({ createdAt: -1 });
-    return res.status(200).json({ success: true, count: agents.length, data: agents });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const agentIds = agents.map((a) => a._id);
+    let salesMap = new Map();
+
+    if (Transaction) {
+      const txAgg = await Transaction.aggregate([
+        { $match: { user: {$in: agentIds }, status: "success" } },
+        { $group: { _id: "$user", totalSales: { $sum: "$amount" } } },
+      ]);
+      txAgg.forEach((t) => salesMap.set(String(t._id), t.totalSales));
+    }
+
+    const agentsWithSales = agents.map((ag) => ({
+      ...ag,
+      totalSales: salesMap.get(String(ag._id)) || 0,
+      totalSpent: salesMap.get(String(ag._id)) || 0,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: agentsWithSales.length,
+      data: agentsWithSales,
+      agents: agentsWithSales,
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -1192,10 +1313,6 @@ const updateUserRole = async (req, res) => {
   }
 };
 
-/**
- * @desc    Dakatar da kowane irin user (Agent, Supervisor, ko Normal User)
- * @route   PATCH /api/v1/admin/users/:id/status ko /api/v1/admin/suspend-user/:id
- */
 const suspendUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -1238,10 +1355,6 @@ const suspendUser = async (req, res) => {
   }
 };
 
-/**
- * @desc    GOGE USER HAR ABADA DAGA DATABASE (PERMANENT DELETE)
- * @route   DELETE /api/v1/admin/users/:id
- */
 const deleteUserPermanently = async (req, res) => {
   try {
     const targetUserId = req.params.id;

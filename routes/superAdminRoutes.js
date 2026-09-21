@@ -4,13 +4,19 @@ const router = express.Router();
 const superAdminController = require("../controllers/superAdminController");
 const { protect, authorize } = require("../middleware/authMiddleware");
 
+// Dynamic Resolution Safe Handler
 const safeHandler = (handler, name) => {
   if (typeof handler === "function") return handler;
 
   return (req, res) => {
+    // Duba fallback idan an wuce sunan kai tsaye
+    if (superAdminController && typeof superAdminController[name] === "function") {
+      return superAdminController[name](req, res);
+    }
+
     return res.status(501).json({
       success: false,
-      message: `${name} is not implemented in superAdminController`,
+      message: `${name} is not implemented on superAdminController build`,
     });
   };
 };
@@ -20,7 +26,7 @@ router.use(protect);
 router.use(authorize("superadmin"));
 
 // ==========================================
-// 1. STATS, USERS & TRANSACTIONS
+// 1. STATS, SYSTEM HEALTH & AUDIT LOGS
 // ==========================================
 router.get(
   "/stats",
@@ -28,10 +34,87 @@ router.get(
 );
 
 router.get(
+  "/system-stats",
+  safeHandler(superAdminController.getSystemStats, "getSystemStats")
+);
+
+router.get(
+  "/health",
+  safeHandler(superAdminController.getSystemHealth, "getSystemHealth")
+);
+
+router.get(
+  "/audit-logs",
+  safeHandler(superAdminController.getAuditLogs, "getAuditLogs")
+);
+
+// ==========================================
+// 2. USER CATEGORIZATION & DIRECTORY
+// ==========================================
+router.get(
   "/users",
   safeHandler(superAdminController.getAllUsers, "getAllUsers")
 );
 
+router.get(
+  "/supervisors",
+  safeHandler(superAdminController.getSupervisors, "getSupervisors")
+);
+
+router.get(
+  "/agents",
+  safeHandler(superAdminController.getAgents, "getAgents")
+);
+
+// Cikakken Rajista na sabon mai amfani (Customer, Agent, Supervisor, Support, Staff)
+router.post(
+  "/create-supervisor",
+  safeHandler(superAdminController.createSupervisor, "createSupervisor")
+);
+
+router.post(
+  "/supervisors/create",
+  safeHandler(superAdminController.createSupervisor, "createSupervisor")
+);
+
+router.post(
+  "/users/create",
+  safeHandler(superAdminController.createSupervisor, "createSupervisor")
+);
+
+// ==========================================
+// 3. SECURITY: SUSPEND & PERMANENT DELETION
+// ==========================================
+// Dakatarwa ko Kunnawa (Suspend / Unsuspend)
+router.patch(
+  "/users/:id/status",
+  safeHandler(superAdminController.suspendUser, "suspendUser")
+);
+
+router.put(
+  "/users/:id/status",
+  safeHandler(superAdminController.suspendUser, "suspendUser")
+);
+
+router.patch(
+  "/suspend-user/:id",
+  safeHandler(superAdminController.suspendUser, "suspendUser")
+);
+
+// GOGE MAI AMFANI HAR ABADA DAGA DATABASE
+router.delete(
+  "/users/:id",
+  safeHandler(superAdminController.deleteUserPermanently, "deleteUserPermanently")
+);
+
+router.delete(
+  "/users/delete/:id",
+  safeHandler(superAdminController.deleteUserPermanently, "deleteUserPermanently")
+);
+
+// ==========================================
+// 4. TRANSACTIONS & DIRECT REFUNDS
+// ==========================================
 router.get(
   "/transactions",
   safeHandler(
@@ -48,35 +131,21 @@ router.get(
   )
 );
 
-router.get(
-  "/audit-logs",
-  safeHandler(superAdminController.getAuditLogs, "getAuditLogs")
-);
-
-router.get(
-  "/health",
-  safeHandler(superAdminController.getSystemHealth, "getSystemHealth")
-);
-
-// ==========================================
-// 2. BROADCAST NOTIFICATIONS & WALLET REFUNDS
-// ==========================================
-router.post(
-  "/broadcast",
-  safeHandler(
-    superAdminController.sendBroadcastNotification,
-    "sendBroadcastNotification"
-  )
-);
-
+// Direct Wallet Refunds
 router.post(
   "/refund",
   safeHandler(superAdminController.processUserRefund, "processUserRefund")
 );
 
+router.post(
+  "/wallet/refund",
+  safeHandler(superAdminController.processUserRefund, "processUserRefund")
+);
+
 // ==========================================
-// 3. PRICING CONFIGURATION (DATA, NIMC, BVN)
+// 5. PRICING & TARIFF CONFIGURATION
 // ==========================================
+// NIMC, BVN, Cable TV, da VAS Pricing
 router.get(
   "/pricing",
   safeHandler(superAdminController.getPricingMatrix, "getPricingMatrix")
@@ -88,30 +157,47 @@ router.put(
 );
 
 router.post(
+  "/pricing",
+  safeHandler(superAdminController.updatePricingMatrix, "updatePricingMatrix")
+);
+
+router.post(
   "/pricing/update",
   safeHandler(superAdminController.updatePricingMatrix, "updatePricingMatrix")
 );
 
+// Buga Data Plan (Plan ID & Network ID Sync)
+router.post(
+  "/set-plan",
+  safeHandler(superAdminController.setPlanPrice, "setPlanPrice")
+);
+
 // ==========================================
-// 4. OPERATIONAL TARGETS & SUPERVISOR ENROLLMENT
+// 6. BROADCAST NOTIFICATIONS & TARGETS
 // ==========================================
+router.post(
+  "/broadcast",
+  safeHandler(
+    superAdminController.sendBroadcastNotification,
+    "sendBroadcastNotification"
+  )
+);
+
+router.post(
+  "/notifications/broadcast",
+  safeHandler(
+    superAdminController.sendBroadcastNotification,
+    "sendBroadcastNotification"
+  )
+);
+
 router.post(
   "/targets",
   safeHandler(superAdminController.assignTarget, "assignTarget")
 );
 
-router.post(
-  "/create-supervisor",
-  safeHandler(superAdminController.createSupervisor, "createSupervisor")
-);
-
-router.post(
-  "/supervisors/create",
-  safeHandler(superAdminController.createSupervisor, "createSupervisor")
-);
-
 // ==========================================
-// 5. ROLE MANAGEMENT
+// 7. ROLE MANAGEMENT
 // ==========================================
 router.post(
   "/make-admin",
