@@ -81,15 +81,6 @@ const sendToken = (user, statusCode, res) => {
 
   const resolvedRole = String(user.role || "user").toLowerCase().trim();
 
-  // Tabbatar da matsayin Transaction PIN (Duba ko an riga an saita wanda ba 0000 ko fanko ba)
-  const rawPin = String(user.pin || "").trim();
-  const isPinConfigured = Boolean(
-    rawPin &&
-    rawPin !== "0000" &&
-    rawPin !== "" &&
-    (user.isPinSet === true || user.pin_set === true || user.has_transaction_pin === true || rawPin.length === 4)
-  );
-
   const userPayload = {
     id: user._id,
     _id: user._id,
@@ -110,11 +101,6 @@ const sendToken = (user, statusCode, res) => {
     address: user.address,
     businessAddress: user.businessAddress,
     assignedSupervisor: user.assignedSupervisor,
-    // Tutar kariya ga LoginScreen da SetupPin:
-    isPinSet: isPinConfigured,
-    hasPin: isPinConfigured,
-    has_transaction_pin: isPinConfigured,
-    pin_set: isPinConfigured,
   };
 
   res.status(statusCode).json({
@@ -122,10 +108,8 @@ const sendToken = (user, statusCode, res) => {
     message: `${APP_NAME} authentication successful`,
     token,
     role: resolvedRole,
-    isPinSet: isPinConfigured,
-    hasPin: isPinConfigured,
     user: userPayload,
-    data: { user: userPayload, token, role: resolvedRole, isPinSet: isPinConfigured },
+    data: { user: userPayload, token, role: resolvedRole },
   });
 };
 
@@ -204,6 +188,7 @@ const verifyCredentials = async (inputPassword, storedHash, userModelInstance) =
 
   // 3. Fallback: idan kalmar sirrin ta shiga a matsayin plain text ba tare da hash ba
   if (raw === target) {
+    // Daidaita shi zuwa hash a bango don tsaro
     const salt = await bcrypt.genSalt(10);
     userModelInstance.password = await bcrypt.hash(raw, salt);
     await userModelInstance.save({ validateBeforeSave: false }).catch(() => null);
@@ -299,10 +284,6 @@ exports.register = async (req, res) => {
       walletBalance: 0,
       status: "active",
       isSuspended: false,
-      pin: "0000",
-      isPinSet: false,
-      has_transaction_pin: false,
-      pin_set: false,
     });
 
     try {
@@ -352,9 +333,10 @@ exports.login = async (req, res) => {
 
     const cleanIdentifier = String(email).toLowerCase().trim();
 
+    // Nemo user ta Email ko kuma Lambar Waya
     const user = await User.findOne({
       $or: [{ email: cleanIdentifier }, { phone: cleanIdentifier }],
-    }).select("+password +pin");
+    }).select("+password");
 
     if (!user) {
       return res.status(401).json({
@@ -389,6 +371,7 @@ exports.login = async (req, res) => {
   }
 };
 
+// Keɓantacciyar hanyar shiga ta Supervisor
 exports.supervisorLogin = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -405,7 +388,7 @@ exports.supervisorLogin = async (req, res) => {
     const user = await User.findOne({
       $or: [{ email: cleanIdentifier }, { phone: cleanIdentifier }],
       role: { $in: ["supervisor", "leader", "admin"] },
-    }).select("+password +pin");
+    }).select("+password");
 
     if (!user) {
       return res.status(401).json({
@@ -614,7 +597,7 @@ exports.paystackWebhook = async (req, res) => {
 exports.updatePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const user = await User.findById(req.user.id || req.user._id).select("+password");
+    const user = await User.findById(req.user.id).select("+password");
 
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found." });
@@ -641,161 +624,35 @@ exports.updatePassword = async (req, res) => {
   }
 };
 
-// ==========================================
-// 3. TRANSACTION PIN LIFECYCLE (STATUS, SET & UPDATE)
-// ==========================================
-
-/**
- * @desc    Get Transaction PIN Status (Has PIN or Needs Setup)
- * @route   GET /api/v1/user/pin-status ko /api/v1/users/pin-status
- * @access  Private
- */
-exports.getPinStatus = async (req, res) => {
+exports.updatePin = async (req, res) => {
   try {
-    const userId = req.user?.id || req.user?._id;
-    const user = await User.findById(userId).select("+pin");
+    const { newPin } = req.body;
 
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
-    const rawPin = String(user.pin || "").trim();
-    const hasPin = Boolean(
-      rawPin &&
-      rawPin !== "0000" &&
-      rawPin !== "" &&
-      (user.isPinSet === true || user.pin_set === true || user.has_transaction_pin === true || rawPin.length === 4)
-    );
-
-    return res.status(200).json({
-      success: true,
-      hasPin,
-      isPinSet: hasPin,
-      has_transaction_pin: hasPin,
-      pin_set: hasPin,
-      message: hasPin ? "PIN is configured" : "PIN setup required",
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-/**
- * @desc    Set Initial Transaction PIN (Dole ga sabon mai amfani a SetupPinScreen)
- * @route   POST /api/v1/user/set-pin ko /api/v1/auth/set-pin
- * @access  Private
- */
-exports.setPin = async (req, res) => {
-  try {
-    const { pin, transactionPin } = req.body;
-    const targetPin = String(pin || transactionPin || "").trim();
-
-    if (!targetPin || targetPin.length !== 4 || !/^\d{4}$/.test(targetPin)) {
+    if (!newPin || String(newPin).length !== 4) {
       return res.status(400).json({
         success: false,
         message: "Transaction PIN must be exactly 4 digits.",
       });
     }
 
-    const userId = req.user?.id || req.user?._id;
-    const user = await User.findById(userId).select("+pin");
+    await User.findByIdAndUpdate(req.user.id, {
+      pin: newPin,
+      has_transaction_pin: true,
+      pin_set: true,
+    });
 
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found." });
-    }
-
-    // Saka PIN tare da canza tutocin tsaro
-    user.pin = targetPin;
-    user.has_transaction_pin = true;
-    user.pin_set = true;
-    user.isPinSet = true;
-    await user.save({ validateBeforeSave: false });
-
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
-      message: "Transaction PIN configured successfully.",
-      hasPin: true,
-      isPinSet: true,
+      message: "Transaction PIN set successfully.",
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
-};
-
-/**
- * @desc    Change / Update Existing Transaction PIN
- * @route   POST /api/v1/user/change-pin ko /api/v1/users/change-pin
- * @access  Private
- */
-exports.changePin = async (req, res) => {
-  try {
-    const { oldPin, currentPin, newPin, pin, transactionPin } = req.body;
-    const resolvedOldPin = String(oldPin || currentPin || "").trim();
-    const resolvedNewPin = String(newPin || pin || transactionPin || "").trim();
-
-    if (!resolvedNewPin || resolvedNewPin.length !== 4 || !/^\d{4}$/.test(resolvedNewPin)) {
-      return res.status(400).json({
-        success: false,
-        message: "New transaction PIN must be exactly 4 digits.",
-      });
-    }
-
-    const userId = req.user?.id || req.user?._id;
-    const user = await User.findById(userId).select("+pin");
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found." });
-    }
-
-    // Idan mai amfani yana da tsohon PIN wanda ba 0000 ba, tabbatar da shi
-    const existingPin = String(user.pin || "").trim();
-    if (existingPin && existingPin !== "0000" && existingPin !== "") {
-      if (!resolvedOldPin) {
-        return res.status(400).json({
-          success: false,
-          message: "Current 4-digit transaction PIN is required.",
-        });
-      }
-
-      let isOldPinMatch = resolvedOldPin === existingPin;
-      if (!isOldPinMatch && typeof user.matchPin === "function") {
-        try {
-          isOldPinMatch = await user.matchPin(resolvedOldPin);
-        } catch {}
-      }
-
-      if (!isOldPinMatch) {
-        return res.status(401).json({
-          success: false,
-          message: "Incorrect current transaction PIN.",
-        });
-      }
-    }
-
-    user.pin = resolvedNewPin;
-    user.has_transaction_pin = true;
-    user.pin_set = true;
-    user.isPinSet = true;
-    await user.save({ validateBeforeSave: false });
-
-    return res.status(200).json({
-      success: true,
-      message: "Transaction PIN updated successfully.",
-      hasPin: true,
-      isPinSet: true,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.updatePin = async (req, res) => {
-  return exports.changePin(req, res);
 };
 
 exports.getUserProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id || req.user._id).select("-password").lean();
+    const user = await User.findById(req.user.id).select("-password").lean();
 
     if (!user) {
       return res.status(404).json({
@@ -804,26 +661,10 @@ exports.getUserProfile = async (req, res) => {
       });
     }
 
-    const rawPin = String(user.pin || "").trim();
-    const hasPin = Boolean(
-      rawPin &&
-      rawPin !== "0000" &&
-      rawPin !== "" &&
-      (user.isPinSet === true || user.pin_set === true || user.has_transaction_pin === true || rawPin.length === 4)
-    );
-
-    const userPayload = {
-      ...user,
-      hasPin,
-      isPinSet: hasPin,
-      has_transaction_pin: hasPin,
-      pin_set: hasPin,
-    };
-
     res.status(200).json({
       success: true,
-      user: userPayload,
-      data: { user: userPayload },
+      user,
+      data: { user },
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
