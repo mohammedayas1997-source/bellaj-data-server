@@ -4,6 +4,12 @@ const Activity = require("../models/Activity");
 const NIMCRequest = require("../models/NIMCRequest");
 const BVNRequest = require("../models/BVNRequest");
 const SupportRequest = require("../models/SupportRequest");
+let DataPlan;
+try {
+  DataPlan = require("../models/DataPlan");
+} catch (e) {
+  DataPlan = null;
+}
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
@@ -136,7 +142,7 @@ const getSystemHealth = async (req, res) => {
 };
 
 // ==========================================
-// 2. PRICING CONTROLS
+// 2. PRICING CONTROLS & SET-PLAN (TARIFF)
 // ==========================================
 const updatePricing = async (req, res) => {
   try {
@@ -189,6 +195,119 @@ const getAllPricing = async (req, res) => {
       count: list.length,
       data: list,
     });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * @desc    Publish/Update Data Tariff Plan (Al-Ihsan / Gateway Plan ID & Network ID Sync)
+ * @route   POST /api/v1/admin/set-plan
+ */
+const setPlanPrice = async (req, res) => {
+  try {
+    if (!DataPlan) {
+      return res.status(500).json({ success: false, message: "DataPlan model is not registered" });
+    }
+
+    const {
+      network,
+      networkName,
+      networkId,
+      planId,
+      planCode,
+      planType,
+      type,
+      volume,
+      sizeGB,
+      validity,
+      customerPrice,
+      userPrice,
+      agentPrice,
+      retailPrice,
+    } = req.body;
+
+    const netName = String(network || networkName || "MTN").toUpperCase().trim();
+    let netId = String(networkId || "");
+    if (!netId) {
+      if (netName.includes("MTN")) netId = "1";
+      else if (netName.includes("GLO")) netId = "2";
+      else if (netName.includes("9MOBILE") || netName.includes("ETISALAT")) netId = "3";
+      else if (netName.includes("AIRTEL")) netId = "4";
+      else netId = "1";
+    }
+
+    const resolvedPlanId = String(planId || planCode || "").trim();
+    if (!resolvedPlanId) {
+      return res.status(400).json({ success: false, message: "Gateway Plan ID is required" });
+    }
+
+    const finalCustomer = Number(customerPrice !== undefined ? customerPrice : userPrice || 0);
+    const finalAgent = Number(agentPrice !== undefined ? agentPrice : retailPrice || 0);
+
+    const rawVolume = String(volume || (sizeGB ? `${sizeGB} GB` : "1.0 GB")).trim();
+    let numericSize = Number(sizeGB || 0);
+    if (!numericSize) {
+      const match = rawVolume.match(/([\d.]+)/);
+      if (match) {
+        numericSize = rawVolume.toUpperCase().includes("MB") ? Number(match[1]) / 1000 : Number(match[1]);
+      }
+    }
+
+    const resolvedType = String(planType || type || "DC").toUpperCase().trim();
+    const resolvedValidity = String(validity || "30 Days").trim();
+    const planLabel = `${netName} ${rawVolume} (${resolvedType})`;
+
+    const plan = await DataPlan.findOneAndUpdate(
+      {
+        $or: [
+          { planId: resolvedPlanId, networkId: netId },
+          { planCode: resolvedPlanId, networkId: netId },
+        ],
+      },
+      {
+        $set: {
+          networkId: netId,
+          network: netName,
+          networkName: netName,
+          planId: resolvedPlanId,
+          planCode: resolvedPlanId,
+          planType: resolvedType,
+          type: resolvedType,
+          volume: rawVolume,
+          sizeGB: numericSize,
+          validity: resolvedValidity,
+          customerPrice: finalCustomer,
+          userPrice: finalCustomer,
+          price: finalCustomer,
+          agentPrice: finalAgent,
+          retailPrice: finalAgent,
+          planLabel,
+          name: planLabel,
+          isActive: true,
+          updatedAt: new Date(),
+        },
+      },
+      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Data plan ${planLabel} published successfully`,
+      data: plan,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getPlans = async (req, res) => {
+  try {
+    if (!DataPlan) {
+      return res.status(200).json({ success: true, count: 0, data: [] });
+    }
+    const plans = await DataPlan.find({ isActive: true }).sort({ networkId: 1, userPrice: 1 }).lean();
+    return res.status(200).json({ success: true, count: plans.length, data: plans, plans });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -363,37 +482,73 @@ const broadcastNotification = async (req, res) => {
 };
 
 // ==========================================
-// 5. SUPERVISOR WORKFLOW (BABU DOUBLE HASH)
+// 5. CIKEKEN REGISTRATION NA SUPERVISOR, AGENT, CUSTOMER & STAFF
 // ==========================================
 const createSupervisor = async (req, res) => {
   try {
-    const { firstName, surname, name, email, phone, password } = req.body;
+    const {
+      fullName,
+      name,
+      firstName,
+      surname,
+      email,
+      phone,
+      password,
+      role,
+      state,
+      lga,
+      address,
+    } = req.body;
 
     if (!email || !password || !phone) {
       return res.status(400).json({
         success: false,
-        message: "First name, email, phone, and password are required",
+        message: "Email, phone number, and password are required",
       });
     }
 
     const cleanEmail = email.toLowerCase().trim();
-    const existing = await User.findOne({ email: cleanEmail });
+    const cleanPhone = String(phone).trim();
+
+    const existing = await User.findOne({
+      $or: [{ email: cleanEmail }, { phone: cleanPhone }],
+    });
+
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: "User with this email already exists",
+        message: "An account with this email address or phone number already exists",
       });
     }
 
-    // A tura kalmar sirrin a matsayin plain-text; User.js pre-save hook ne zai yi bcrypt.hash da kansa!
-    const supervisor = await User.create({
-      name: name || `${firstName || ""} ${surname || ""}`.trim() || "Bellaj Supervisor",
-      firstName: firstName || "Supervisor",
-      surname: surname || "Bellaj",
+    // Tace cikakken suna
+    const rawFullName = (fullName || name || "").trim();
+    let fName = firstName ? firstName.trim() : "";
+    let sName = surname ? surname.trim() : "";
+
+    if (rawFullName && (!fName || !sName)) {
+      const parts = rawFullName.split(" ");
+      fName = parts[0] || "User";
+      sName = parts.slice(1).join(" ") || "Bellaj";
+    }
+
+    // Tace Role (Customer, Agent, Supervisor, Support, Staff)
+    let assignedRole = String(role || "supervisor").toLowerCase().trim();
+    if (assignedRole === "customer") assignedRole = "user";
+    if (assignedRole === "staff") assignedRole = "admin";
+
+    // Ƙirƙirar account da plain-text password don UserSchema pre-save hook ya yi hashing sau ɗaya
+    const newUser = await User.create({
+      name: rawFullName || `${fName} ${sName}`.trim(),
+      firstName: fName || "User",
+      surname: sName || "Bellaj",
       email: cleanEmail,
-      phone: String(phone).trim(),
+      phone: cleanPhone,
       password: String(password).trim(),
-      role: "supervisor",
+      role: assignedRole,
+      state: state ? String(state).trim() : "Gombe",
+      lga: lga ? String(lga).trim() : "Gombe",
+      address: address ? String(address).trim() : "",
       isSuspended: false,
       status: "active",
       walletBalance: 0,
@@ -402,23 +557,26 @@ const createSupervisor = async (req, res) => {
 
     await Activity.create({
       staffId: req.user?._id,
-      action: "BELLAJ_SUPERVISOR_CREATED",
-      details: `Created new supervisor: ${supervisor.email} (${supervisor.phone})`,
-      targetUser: supervisor._id,
+      action: `BELLAJ_${assignedRole.toUpperCase()}_REGISTERED`,
+      details: `Created new ${assignedRole}: ${newUser.name} (${newUser.email}, ${newUser.phone}) in ${newUser.lga}, ${newUser.state}`,
+      targetUser: newUser._id,
     }).catch(() => null);
 
     return res.status(201).json({
       success: true,
-      message: `Supervisor ${supervisor.name} created successfully`,
+      message: `Account for ${newUser.name} (${assignedRole.toUpperCase()}) created successfully`,
       data: {
-        id: supervisor._id,
-        name: supervisor.name,
-        email: supervisor.email,
-        phone: supervisor.phone,
-        role: supervisor.role,
+        id: newUser._id,
+        name: newUser.name,
+        email: newUser.email,
+        phone: newUser.phone,
+        role: newUser.role,
+        state: newUser.state,
+        lga: newUser.lga,
       },
     });
   } catch (error) {
+    console.error("Create User/Supervisor Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -1045,7 +1203,6 @@ const suspendUser = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // Kar a bar wani ya dakatar da kansa idan superadmin ne
     if (req.user?._id && String(req.user._id) === String(user._id)) {
       return res.status(400).json({
         success: false,
@@ -1098,7 +1255,6 @@ const deleteUserPermanently = async (req, res) => {
       return res.status(404).json({ success: false, message: "User does not exist in database" });
     }
 
-    // Kariya: Kar a bar Admin ya goge kansa
     if (req.user?._id && String(req.user._id) === String(user._id)) {
       return res.status(400).json({
         success: false,
@@ -1110,7 +1266,6 @@ const deleteUserPermanently = async (req, res) => {
     const deletedEmail = user.email;
     const deletedName = user.name || `${user.firstName || ""} ${user.surname || ""}`.trim();
 
-    // 1. Idan supervisor ne aka goge, cire shi daga karkashin dukkan agents dinsa
     if (deletedRole === "supervisor") {
       await User.updateMany(
         { assignedSupervisor: user._id },
@@ -1118,10 +1273,8 @@ const deleteUserPermanently = async (req, res) => {
       );
     }
 
-    // 2. Goge mai amfanin kai tsaye daga collection na users
     await User.findByIdAndDelete(targetUserId);
 
-    // 3. Ajiye audit log na gogewar
     await Activity.create({
       staffId: req.user?._id,
       action: "BELLAJ_USER_PERMANENTLY_DELETED",
@@ -1407,6 +1560,8 @@ module.exports = {
   getSystemHealth,
   updatePricing,
   getAllPricing,
+  setPlanPrice,
+  getPlans,
   assignTarget,
   broadcastNotification,
   createSupervisor,
@@ -1436,7 +1591,6 @@ module.exports = {
   approveBVNRequest,
   getAllUsers,
   updateUserRole,
-  // Ayyukan da aka daidaita don AdminControl:
   suspendUser,
   deleteUserPermanently,
 };

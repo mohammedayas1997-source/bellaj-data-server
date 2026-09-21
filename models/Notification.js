@@ -7,7 +7,7 @@ const NotificationSchema = new mongoose.Schema(
      */
     title: {
       type: String,
-      required: true,
+      required: [true, "Notification title is required"],
       trim: true,
       maxlength: 150,
     },
@@ -17,27 +17,47 @@ const NotificationSchema = new mongoose.Schema(
      */
     message: {
       type: String,
-      required: true,
+      required: [true, "Notification message body is required"],
       trim: true,
-      maxlength: 3000,
+      maxlength: 5000,
     },
 
     /**
-     * Notification Type
-     * Used for UI colors/icons
+     * Notification Type (Used for UI styling/icons)
      */
     type: {
       type: String,
-      enum: ["info", "warning", "success", "danger"],
+      trim: true,
+      lowercase: true,
       default: "info",
       index: true,
     },
 
     /**
-     * Notification Audience
+     * Notification Category (e.g. SYSTEM, LGA_DIRECTIVE, TRANSACTION, PROMO)
+     */
+    category: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "BROADCAST",
+      index: true,
+    },
+
+    /**
+     * Notification Audience Target
      */
     target: {
       type: String,
+      trim: true,
+      lowercase: true,
+      set: (val) => {
+        const v = String(val || "all").toLowerCase().trim();
+        if (v === "subscribers" || v === "users") return "user";
+        if (v === "agents") return "agent";
+        if (v === "supervisors") return "supervisor";
+        return v;
+      },
       enum: [
         "all",
         "user",
@@ -48,6 +68,23 @@ const NotificationSchema = new mongoose.Schema(
         "superadmin",
       ],
       default: "all",
+      index: true,
+    },
+
+    /**
+     * Target State & LGA (Used for targeted field broadcasts)
+     */
+    state: {
+      type: String,
+      trim: true,
+      default: null,
+      index: true,
+    },
+
+    lga: {
+      type: String,
+      trim: true,
+      default: null,
       index: true,
     },
 
@@ -71,8 +108,7 @@ const NotificationSchema = new mongoose.Schema(
     },
 
     /**
-     * Sticky Notification
-     * Important alerts pinned at top
+     * Sticky Notification (Pinned at top)
      */
     isPinned: {
       type: Boolean,
@@ -148,7 +184,9 @@ const NotificationSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  },
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
 
 /**
@@ -175,28 +213,33 @@ NotificationSchema.index({
   isPinned: 1,
 });
 
+NotificationSchema.index({
+  state: 1,
+  lga: 1,
+});
+
 /**
- * Auto-disable expired notifications
+ * Auto-disable expired notifications helper
  */
 NotificationSchema.methods.isExpired = function () {
   if (!this.expiresAt) return false;
-
   return new Date() > this.expiresAt;
 };
 
 /**
- * Auto formatting
+ * Auto formatting pre-save hook
  */
 NotificationSchema.pre("save", function (next) {
   if (this.type) {
     this.type = this.type.trim().toLowerCase();
   }
 
-  if (this.target) {
-    this.target = this.target.trim().toLowerCase();
+  if (this.category) {
+    this.category = this.category.trim().toUpperCase();
   }
 
   next();
 });
 
-module.exports = mongoose.model("Notification", NotificationSchema);
+module.exports =
+  mongoose.models.Notification || mongoose.model("Notification", NotificationSchema);
